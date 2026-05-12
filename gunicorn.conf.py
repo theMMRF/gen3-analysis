@@ -57,6 +57,5 @@ bind = "0.0.0.0:8000"
 
 workers = settings.GUNICORN_WORKERS
 
-# default was `30` for the 2 below
-timeout = 90
-graceful_timeout = 90
+timeout = settings.GUNICORN_TIMEOUT
+graceful_timeout = settings.GUNICORN_GRACEFUL_TIMEOUT

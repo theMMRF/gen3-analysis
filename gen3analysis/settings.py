@@ -39,11 +39,14 @@ class CoreSettings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore")
 
     GUNICORN_WORKERS: Optional[int] = 7
+    GUNICORN_TIMEOUT: int = 210
+    GUNICORN_GRACEFUL_TIMEOUT: int = 210
     HOSTNAME: Optional[str] = ""
     DEBUG: Optional[bool] = False
 
     # Gen3 services
     GUPPY_URL: Optional[str] = "http://guppy-service"
+    GUPPY_HTTP_TIMEOUT: int = 180
     ARBORIST_URL: Optional[str] = "http://arborist-service"
     DEPLOYMENT_TYPE: Optional[str] = "prod"
 
@@ -91,7 +94,7 @@ class GDCGenomicSettings(BaseSettings):
 
     ES_VERIFY_SSL: Optional[bool] = False
     ES_CA_CERT: Optional[str] = None
-    ES_TIMEOUT: int = 30
+    ES_TIMEOUT: int = 180
 
     MAX_CASES: Optional[int] = 10000
     # Guppy default indices
