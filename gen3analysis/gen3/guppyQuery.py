@@ -6,7 +6,7 @@ from fastapi import Cookie, HTTPException
 import httpx
 from starlette.status import HTTP_500_INTERNAL_SERVER_ERROR
 
-from gen3analysis.settings import logger
+from gen3analysis.settings import logger, settings
 from gen3analysis.gen3.csrfTokenCache import CSRFTokenCache
 
 
@@ -24,7 +24,7 @@ class GuppyGQLClient:
         """Get or create the shared async HTTP client."""
         if self._http_client is None or self._http_client.is_closed:
             self._http_client = httpx.AsyncClient(
-                timeout=45.0,
+                timeout=settings.GUPPY_HTTP_TIMEOUT,
                 limits=httpx.Limits(
                     max_keepalive_connections=20,
                     max_connections=100,
@@ -114,7 +114,9 @@ class GuppyGQLClient:
                 if access_token:
                     headers["Authorization"] = f"Bearer {access_token}"
 
-                async with httpx.AsyncClient(timeout=45.0) as client:
+                async with httpx.AsyncClient(
+                    timeout=settings.GUPPY_HTTP_TIMEOUT
+                ) as client:
                     response = await client.post(
                         self.download_url, json=payload, headers=headers
                     )
