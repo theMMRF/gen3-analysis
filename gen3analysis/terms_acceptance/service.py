@@ -108,13 +108,6 @@ async def accept_current_terms(
     user: TermsUser,
     terms_version_id: int,
 ) -> bool:
-    current_terms = await get_current_terms_version(session)
-    if terms_version_id != current_terms.id:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Submitted terms version is no longer current",
-        )
-
     result = await session.execute(
         text(
             """
@@ -123,12 +116,15 @@ async def accept_current_terms(
                 email,
                 name,
                 terms_version_id
-            ) values (
+            )
+            select
                 :user_id,
                 :email,
                 :name,
                 :terms_version_id
-            )
+            from terms_versions
+            where id = :terms_version_id
+              and is_current = true
             on conflict (user_id, terms_version_id) do nothing
             """
         ),
@@ -139,5 +135,11 @@ async def accept_current_terms(
             "terms_version_id": terms_version_id,
         },
     )
+    if result.rowcount == 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Submitted terms version is no longer current",
+        )
+
     await session.commit()
-    return result.rowcount > 0
+    return True

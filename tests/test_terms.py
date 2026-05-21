@@ -47,13 +47,14 @@ class FakeSession:
 
     async def execute(self, statement, params=None):
         statement_text = str(statement)
+        if "insert into terms_acceptances" in statement_text:
+            inserted = self.inserted and params["terms_version_id"] == CURRENT_TERMS.id
+            return FakeResult(rowcount=1 if inserted else 0)
         if "from terms_versions" in statement_text:
             return FakeResult(row=CURRENT_TERMS)
         if "select exists" in statement_text:
             self.acceptance_terms_version_id = params["terms_version_id"]
             return FakeResult(scalar=self.accepted)
-        if "insert into terms_acceptances" in statement_text:
-            return FakeResult(rowcount=1 if self.inserted else 0)
         raise AssertionError(f"Unexpected SQL: {statement_text}")
 
     async def commit(self):
@@ -174,7 +175,7 @@ async def test_accept_terms_records_current_version(app, client):
 
 
 @pytest.mark.asyncio
-async def test_accept_terms_is_idempotent(app, client):
+async def test_accept_terms_rejects_when_insert_does_not_record_acceptance(app, client):
     app.dependency_overrides[
         get_terms_acceptance_sessionmaker
     ] = override_terms_sessionmaker(inserted=False)
@@ -182,8 +183,7 @@ async def test_accept_terms_is_idempotent(app, client):
 
     response = await client.post("/terms/acceptances", json={"terms_version_id": 1})
 
-    assert response.status_code == 200
-    assert response.json()["accepted"] is False
+    assert response.status_code == 409
 
 
 @pytest.mark.asyncio
