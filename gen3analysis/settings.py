@@ -88,6 +88,9 @@ class CoreSettings(BaseSettings):
         None  # e.g. "redis://localhost:6379"; disables in-process cache when set
     )
 
+    # Terms acceptance PostgreSQL database
+    TERMS_ACCEPTANCE_DATABASE_URL: Optional[str] = None
+
 
 class GDCGenomicSettings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore")
@@ -274,6 +277,7 @@ if ENABLED_ROUTES_ENV == "all":
         "ssm_occurrence",
         "cnv",
         "cnv_occurrence",
+        "terms",
     ]
 else:
     # Always include core, add user-specified routes
