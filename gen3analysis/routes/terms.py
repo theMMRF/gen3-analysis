@@ -61,7 +61,7 @@ async def terms_status(
 
     async with sessionmaker() as session:
         terms_version = await get_current_terms_version(session)
-        accepted = await has_accepted_latest_terms(session, user.user_id)
+        accepted = await has_accepted_latest_terms(session, user.user_id, terms_version.id)
 
     return TermsStatusResponse(
         has_accepted_latest_terms=accepted,

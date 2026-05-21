@@ -85,6 +85,7 @@ async def get_current_terms_version(session: AsyncSession) -> TermsVersion:
 async def has_accepted_latest_terms(
     session: AsyncSession,
     user_id: str,
+    terms_version_id: int,
 ) -> bool:
     result = await session.execute(
         text(
@@ -92,13 +93,12 @@ async def has_accepted_latest_terms(
             select exists (
               select 1
               from terms_acceptances ta
-              join terms_versions tv on tv.id = ta.terms_version_id
               where ta.user_id = :user_id
-                and tv.is_current = true
+                and ta.terms_version_id = :terms_version_id
             ) as has_accepted_latest_terms
             """
         ),
-        {"user_id": user_id},
+        {"user_id": user_id, "terms_version_id": terms_version_id},
     )
     return bool(result.scalar_one())
 

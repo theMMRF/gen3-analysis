@@ -37,6 +37,7 @@ class FakeSession:
         self.accepted = accepted
         self.inserted = inserted
         self.committed = False
+        self.acceptance_terms_version_id = None
 
     async def __aenter__(self):
         return self
@@ -49,6 +50,7 @@ class FakeSession:
         if "from terms_versions" in statement_text:
             return FakeResult(row=CURRENT_TERMS)
         if "select exists" in statement_text:
+            self.acceptance_terms_version_id = params["terms_version_id"]
             return FakeResult(scalar=self.accepted)
         if "insert into terms_acceptances" in statement_text:
             return FakeResult(rowcount=1 if self.inserted else 0)
@@ -62,9 +64,11 @@ class FakeSessionMaker:
     def __init__(self, accepted=False, inserted=True):
         self.accepted = accepted
         self.inserted = inserted
+        self.last_session = None
 
     def __call__(self):
-        return FakeSession(accepted=self.accepted, inserted=self.inserted)
+        self.last_session = FakeSession(accepted=self.accepted, inserted=self.inserted)
+        return self.last_session
 
 
 class FakeAuth:
@@ -87,7 +91,8 @@ def clear_dependency_overrides(app):
 
 
 def override_terms_sessionmaker(accepted=False, inserted=True):
-    return lambda: FakeSessionMaker(accepted=accepted, inserted=inserted)
+    sessionmaker = FakeSessionMaker(accepted=accepted, inserted=inserted)
+    return lambda: sessionmaker
 
 
 def test_user_from_claims_prefers_sub_and_email():
@@ -135,9 +140,10 @@ async def test_current_terms_returns_current_version(app, client):
 
 @pytest.mark.asyncio
 async def test_terms_status_returns_unaccepted_state(app, client):
+    sessionmaker = FakeSessionMaker(accepted=False)
     app.dependency_overrides[
         get_terms_acceptance_sessionmaker
-    ] = override_terms_sessionmaker(accepted=False)
+    ] = lambda: sessionmaker
     app.dependency_overrides[Auth] = lambda: FakeAuth()
 
     response = await client.get("/terms/status")
@@ -146,6 +152,7 @@ async def test_terms_status_returns_unaccepted_state(app, client):
     body = response.json()
     assert body["has_accepted_latest_terms"] is False
     assert body["current_terms"]["id"] == 1
+    assert sessionmaker.last_session.acceptance_terms_version_id == 1
 
 
 @pytest.mark.asyncio
