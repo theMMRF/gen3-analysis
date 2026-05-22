@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 import argparse
 import asyncio
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -17,18 +16,28 @@ MIGRATION_PATH = (
 
 load_dotenv(PROJECT_ROOT / ".env")
 
+from gen3analysis.settings import settings  # noqa: E402
+from gen3analysis.terms_acceptance.database import (  # noqa: E402
+    create_terms_acceptance_engine,
+    get_terms_database_config,
+)
 
-def get_database_url(args: argparse.Namespace) -> str:
-    database_url = args.database_url or os.environ.get("TERMS_ACCEPTANCE_DATABASE_URL")
-    if not database_url:
+
+def get_engine(args: argparse.Namespace):
+    if args.database_url:
+        return create_async_engine(args.database_url)
+
+    engine = create_terms_acceptance_engine(get_terms_database_config(settings))
+    if engine is None:
         raise SystemExit(
-            "Set TERMS_ACCEPTANCE_DATABASE_URL or pass --database-url to connect."
+            "Configure TERMS_DB_* or TERMS_ACCEPTANCE_DATABASE_URL, "
+            "or pass --database-url to connect."
         )
-    return database_url
+
+    return engine
 
 
-async def apply_schema(database_url: str) -> None:
-    engine = create_async_engine(database_url)
+async def apply_schema(engine) -> None:
     try:
         migration_sql = MIGRATION_PATH.read_text(encoding="utf-8")
         async with engine.begin() as conn:
@@ -41,7 +50,7 @@ async def apply_schema(database_url: str) -> None:
 
 
 async def create_version(
-    database_url: str,
+    engine,
     version: str,
     content_path: Optional[Path],
     content: Optional[str],
@@ -56,12 +65,15 @@ async def create_version(
     if terms_content is None:
         raise SystemExit("Pass either --content-file or --content.")
 
-    engine = create_async_engine(database_url)
     try:
         async with engine.begin() as conn:
             if make_current:
                 await conn.execute(
-                    text("update terms_versions set is_current = false where is_current = true")
+                    text(
+                        "update terms_versions "
+                        "set is_current = false "
+                        "where is_current = true"
+                    )
                 )
 
             await conn.execute(
@@ -135,13 +147,13 @@ def build_parser() -> argparse.ArgumentParser:
 async def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    database_url = get_database_url(args)
+    engine = get_engine(args)
 
     if args.command == "apply-schema":
-        await apply_schema(database_url)
+        await apply_schema(engine)
     elif args.command == "create-version":
         await create_version(
-            database_url=database_url,
+            engine=engine,
             version=args.version,
             content_path=args.content_file,
             content=args.content,

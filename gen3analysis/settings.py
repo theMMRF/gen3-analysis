@@ -89,6 +89,16 @@ class CoreSettings(BaseSettings):
     )
 
     # Terms acceptance PostgreSQL database
+    TERMS_DB_ENABLED: bool = False
+    TERMS_DB_HOST: Optional[str] = None
+    TERMS_DB_PORT: int = 5432
+    TERMS_DB_NAME: Optional[str] = "terms_acceptance"
+    TERMS_DB_USER: Optional[str] = None
+    TERMS_DB_SECRET_ARN: Optional[str] = None
+    TERMS_DB_SSL_MODE: Optional[str] = "verify-full"
+    TERMS_DB_SSL_ROOT_CERT: Optional[str] = "/etc/ssl/certs/rds-global-bundle.pem"
+
+    # Local/dev override. If set, this full URL is used instead of TERMS_DB_*.
     TERMS_ACCEPTANCE_DATABASE_URL: Optional[str] = None
 
 

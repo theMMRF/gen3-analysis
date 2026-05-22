@@ -17,6 +17,7 @@ from gen3analysis.settings import settings, logger
 from gen3analysis.terms_acceptance.database import (
     create_terms_acceptance_engine,
     create_terms_acceptance_sessionmaker,
+    get_terms_database_config,
 )
 
 route_aggregator = APIRouter()
@@ -123,7 +124,7 @@ async def lifespan(app: FastAPI):
     )
     if "terms" in enabled_routes:
         app.state.terms_acceptance_engine = create_terms_acceptance_engine(
-            settings.TERMS_ACCEPTANCE_DATABASE_URL
+            get_terms_database_config(settings)
         )
         app.state.terms_acceptance_sessionmaker = create_terms_acceptance_sessionmaker(
             app.state.terms_acceptance_engine

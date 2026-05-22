@@ -6,16 +6,27 @@ the user acceptances for those versions.
 
 ## Configuration
 
-Configure the API with a PostgreSQL URL in the same environment mechanism used
-by the rest of this service. For local development, add it to the repo-level
-`.env` file. In deployed environments, provide it through the deployment's
-secret or environment variable configuration.
+Configure the API through the same environment mechanism used by the rest of
+this service.
+
+For deployed environments, use the dedicated Terms DB settings. The database
+password is not stored in these values. The app retrieves it from AWS Secrets
+Manager using `TERMS_DB_SECRET_ARN`.
 
 ```bash
-TERMS_ACCEPTANCE_DATABASE_URL=postgresql+asyncpg://USER:PASSWORD@HOST:5432/terms_acceptance
+TERMS_DB_ENABLED=true
+TERMS_DB_HOST=mmrf-terms-dev.example.us-east-1.rds.amazonaws.com
+TERMS_DB_PORT=5432
+TERMS_DB_NAME=terms_acceptance
+TERMS_DB_USER=postgres
+TERMS_DB_SECRET_ARN=arn:aws:secretsmanager:us-east-1:ACCOUNT_ID:secret:SECRET_NAME
+TERMS_DB_SSL_MODE=verify-full
+TERMS_DB_SSL_ROOT_CERT=/etc/ssl/certs/rds-global-bundle.pem
 ```
 
-If `TERMS_ACCEPTANCE_DATABASE_URL` is not set, the Terms API endpoints return
+For local development, `TERMS_ACCEPTANCE_DATABASE_URL` can still be used as a
+full connection URL override. If neither `TERMS_DB_ENABLED=true` nor
+`TERMS_ACCEPTANCE_DATABASE_URL` is configured, the Terms API endpoints return
 `503` because the database is unavailable.
 
 ## Local Testing With Docker Postgres
