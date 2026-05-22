@@ -136,10 +136,12 @@ async def accept_current_terms(
         },
     )
     if result.rowcount == 0:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Submitted terms version is no longer current",
-        )
+        current_terms = await get_current_terms_version(session)
+        if terms_version_id != current_terms.id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Submitted terms version is no longer current",
+            )
 
     await session.commit()
-    return True
+    return result.rowcount > 0

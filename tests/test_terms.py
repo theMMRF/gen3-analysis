@@ -175,7 +175,7 @@ async def test_accept_terms_records_current_version(app, client):
 
 
 @pytest.mark.asyncio
-async def test_accept_terms_rejects_when_insert_does_not_record_acceptance(app, client):
+async def test_accept_terms_is_idempotent(app, client):
     app.dependency_overrides[
         get_terms_acceptance_sessionmaker
     ] = override_terms_sessionmaker(inserted=False)
@@ -183,7 +183,8 @@ async def test_accept_terms_rejects_when_insert_does_not_record_acceptance(app, 
 
     response = await client.post("/terms/acceptances", json={"terms_version_id": 1})
 
-    assert response.status_code == 409
+    assert response.status_code == 200
+    assert response.json()["accepted"] is False
 
 
 @pytest.mark.asyncio
