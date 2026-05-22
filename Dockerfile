@@ -27,9 +27,10 @@ FROM base
 
 COPY --from=builder /${appname} /${appname}
 
-# curl-minimal is already in the base image; installing curl conflicts with it.
+# curl-minimal is already in the base image; do not install the curl package.
 RUN dnf -y install vim \
-    && python -c "import urllib.request; urllib.request.urlretrieve('https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem', '/etc/ssl/certs/rds-global-bundle.pem')" \
+    && curl -fsSL -o /etc/ssl/certs/rds-global-bundle.pem \
+        https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
     && chmod 644 /etc/ssl/certs/rds-global-bundle.pem
 
 ENV GENE_EXPRESSION_SQLITE_PATH=/opt/mmrf_gene_expression_test_data/schemaless.sqlite3
