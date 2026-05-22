@@ -121,12 +121,16 @@ async def lifespan(app: FastAPI):
             "gen3analysis.gen3authz", log_level="debug" if settings.DEBUG else "info"
         ),
     )
-    app.state.terms_acceptance_engine = create_terms_acceptance_engine(
-        settings.TERMS_ACCEPTANCE_DATABASE_URL
-    )
-    app.state.terms_acceptance_sessionmaker = create_terms_acceptance_sessionmaker(
-        app.state.terms_acceptance_engine
-    )
+    if "terms" in enabled_routes:
+        app.state.terms_acceptance_engine = create_terms_acceptance_engine(
+            settings.TERMS_ACCEPTANCE_DATABASE_URL
+        )
+        app.state.terms_acceptance_sessionmaker = create_terms_acceptance_sessionmaker(
+            app.state.terms_acceptance_engine
+        )
+    else:
+        app.state.terms_acceptance_engine = None
+        app.state.terms_acceptance_sessionmaker = None
 
     # Initialize gene expression data store
     if settings.ENABLED_ROUTES and "gene_expression" in settings.ENABLED_ROUTES:
