@@ -24,6 +24,9 @@ TERMS_DB_SSL_MODE=verify-full
 TERMS_DB_SSL_ROOT_CERT=/etc/ssl/certs/rds-global-bundle.pem
 ```
 
+The Docker image downloads the RDS global CA bundle to that path at build time.
+No separate Kubernetes mount is required for deployed environments.
+
 For local development, `TERMS_ACCEPTANCE_DATABASE_URL` can still be used as a
 full connection URL override. If neither `TERMS_DB_ENABLED=true` nor
 `TERMS_ACCEPTANCE_DATABASE_URL` is configured, the Terms API endpoints return
