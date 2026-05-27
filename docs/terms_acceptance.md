@@ -156,16 +156,16 @@ EOF
 Copy the file into the pod:
 
 ```bash
-kubectl cp /tmp/terms-dev.html \
-  gen3-analysis-deployment:/gen3analysis/terms-dev.html
+kubectl exec -i deploy/gen3-analysis-deployment -- \
+  bash -c 'cat > /gen3analysis/terms-dev.html' < /tmp/terms-dev.html
 ```
 
-If multiple gen3-analysis pods exist during a rollout, copy to a specific pod
-name or wait until only one ready pod remains:
+Or copy to a specific pod name (`kubectl cp` does not accept deployment names):
 
 ```bash
 kubectl get pods | grep gen3-analysis
-kubectl cp /tmp/terms-dev.html POD_NAME:/gen3analysis/terms-dev.html
+kubectl cp /tmp/terms-dev.html \
+  gen3-analysis-deployment-54f6444cb4-m77mr:/gen3analysis/terms-dev.html
 ```
 
 **Load the terms version and mark it current:**
@@ -294,11 +294,17 @@ JSON export is also supported with `--format json`.
 Copy the export file from the pod to squid:
 
 ```bash
-kubectl cp deploy/gen3-analysis-deployment:/tmp/terms-acceptances.csv \
-  /tmp/terms-acceptances.csv
+kubectl exec deploy/gen3-analysis-deployment -- \
+  cat /tmp/terms-acceptances.csv > /tmp/terms-acceptances.csv
 ```
 
-If `kubectl cp` fails during a rollout, copy from a specific pod name instead.
+Or use `kubectl cp` with a pod name (`kubectl cp` does not accept deployment
+names):
+
+```bash
+POD=$(kubectl get pods --no-headers | awk '/gen3-analysis-deployment.*Running/{print $1; exit}')
+kubectl cp "$POD:/tmp/terms-acceptances.csv" /tmp/terms-acceptances.csv
+```
 
 Upload to S3:
 
