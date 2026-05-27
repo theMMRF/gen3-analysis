@@ -32,6 +32,192 @@ full connection URL override. If neither `TERMS_DB_ENABLED=true` nor
 `TERMS_ACCEPTANCE_DATABASE_URL` is configured, the Terms API endpoints return
 `503` because the database is unavailable.
 
+Configuration is read from **Kubernetes deployment environment variables** (or a
+repo-level `.env` file for local dev). The legacy `config.py` Kubernetes secret
+is not used by this service.
+
+## Deployed Environment Setup
+
+Use this checklist when standing up Terms acceptance in dev or prod.
+
+### 1. RDS and Secrets Manager
+
+- Create a dedicated PostgreSQL database named `terms_acceptance`.
+- Store the master password in AWS Secrets Manager (RDS-managed secrets are fine).
+- Note the RDS hostname and the Secrets Manager ARN (`TERMS_DB_SECRET_ARN`).
+
+### 2. GitOps environment variables
+
+Add these to the gen3-analysis deployment in gitops (dev/prod values as
+appropriate):
+
+```yaml
+- name: TERMS_DB_ENABLED
+  value: "true"
+- name: TERMS_DB_HOST
+  value: "mmrf-terms-dev.example.us-east-1.rds.amazonaws.com"
+- name: TERMS_DB_PORT
+  value: "5432"
+- name: TERMS_DB_NAME
+  value: "terms_acceptance"
+- name: TERMS_DB_USER
+  value: "postgres"
+- name: TERMS_DB_SECRET_ARN
+  value: "arn:aws:secretsmanager:us-east-1:ACCOUNT_ID:secret:rds!db-..."
+- name: TERMS_DB_SSL_MODE
+  value: "verify-full"
+- name: TERMS_DB_SSL_ROOT_CERT
+  value: "/etc/ssl/certs/rds-global-bundle.pem"
+```
+
+Deploy a gen3-analysis image that includes the RDS CA bundle (built from this
+repo's Dockerfile). No separate Kubernetes mount is required for the cert.
+
+After rollout, confirm the pod has the variables:
+
+```bash
+kubectl exec deploy/gen3-analysis-deployment -- env | grep TERMS_
+```
+
+### 3. RDS security groups
+
+Allow PostgreSQL (`5432/tcp`) from the EKS worker node security group to the
+RDS instance security group. Without this, the API and helper script can read
+the password from Secrets Manager but cannot connect to the database.
+
+If you run database admin commands from a squid/bastion host using direct RDS
+access, also allow that host's security group (or your admin VPN CIDR) on the
+RDS security group.
+
+### 4. IAM permissions for Secrets Manager
+
+The gen3-analysis pod retrieves the database password at startup using boto3 and
+`TERMS_DB_SECRET_ARN`. Attach a policy like this to the IAM role used by the
+pod.
+
+When IRSA is not configured, pods use the **EKS worker node role** (for example
+`eks_mmrf-dev-dl_workers_role`). When IRSA is configured, attach the policy to
+the gen3-analysis service account role instead.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "TermsDbSecretRead",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+      ],
+      "Resource": "arn:aws:secretsmanager:us-east-1:ACCOUNT_ID:secret:rds!db-045bdc7b-13c2-4022-aa57-420f1d173d84-*"
+    }
+  ]
+}
+```
+
+Use the `-*` suffix wildcard because Secrets Manager ARNs include a random
+suffix. Replace `ACCOUNT_ID` and the secret name with your environment values.
+
+If the secret uses a customer-managed KMS key, you may also need `kms:Decrypt`
+on that key. RDS-managed secrets usually do not require an extra KMS policy.
+
+After updating IAM, restart the deployment if the pod was crash-looping:
+
+```bash
+kubectl rollout restart deployment/gen3-analysis-deployment
+kubectl logs -f deploy/gen3-analysis-deployment
+```
+
+### 5. Apply schema and load the current terms version
+
+Run these from a squid/admin host with `kubectl` access to the cluster.
+
+**Apply the schema** (one time per environment):
+
+```bash
+kubectl exec deploy/gen3-analysis-deployment -- \
+  bash -c 'cd /gen3analysis && poetry run python bin/terms_acceptance.py apply-schema'
+```
+
+The helper runs inside the pod and uses the pod's `TERMS_DB_*` environment
+variables and IAM role. You do not need Secrets Manager permissions on the
+squid instance itself for this workflow.
+
+**Create a terms HTML file on squid** using a quoted heredoc so pasted HTML is
+not interpreted by the shell (safe for `$`, backticks, and quotes):
+
+```bash
+cat > /tmp/terms-dev.html <<'EOF'
+(paste your full HTML here)
+EOF
+```
+
+Copy the file into the pod:
+
+```bash
+kubectl cp /tmp/terms-dev.html \
+  gen3-analysis-deployment:/gen3analysis/terms-dev.html
+```
+
+If multiple gen3-analysis pods exist during a rollout, copy to a specific pod
+name or wait until only one ready pod remains:
+
+```bash
+kubectl get pods | grep gen3-analysis
+kubectl cp /tmp/terms-dev.html POD_NAME:/gen3analysis/terms-dev.html
+```
+
+**Load the terms version and mark it current:**
+
+```bash
+kubectl exec deploy/gen3-analysis-deployment -- \
+  bash -c 'cd /gen3analysis && poetry run python bin/terms_acceptance.py create-version \
+    --version dev-2026-05-22 \
+    --content-file ./terms-dev.html \
+    --content-format html \
+    --make-current'
+```
+
+Use a meaningful `--version` string for each release (for example
+`2026-05-22` in prod).
+
+**Verify:**
+
+```bash
+kubectl exec deploy/gen3-analysis-deployment -- \
+  curl -s http://127.0.0.1:8000/analysis/v0/terms/current
+```
+
+From outside the cluster (through revproxy):
+
+```bash
+curl -s https://YOUR_HOST/analysis/v0/terms/current
+```
+
+Before a terms row exists, `/terms/current` returns an error indicating no
+current version is configured. After `create-version --make-current`, it
+returns JSON with `terms_content`.
+
+### 6. Publishing updated terms later
+
+Create a new version with a new `--version` value and `--make-current`. The
+helper clears the previous current flag in the same transaction.
+
+```bash
+kubectl cp /tmp/terms-updated.html POD_NAME:/gen3analysis/terms-updated.html
+
+kubectl exec deploy/gen3-analysis-deployment -- \
+  bash -c 'cd /gen3analysis && poetry run python bin/terms_acceptance.py create-version \
+    --version 2026-06-01 \
+    --content-file ./terms-updated.html \
+    --content-format html \
+    --make-current'
+```
+
+Users who accepted an older version will need to accept again; existing
+acceptance rows are preserved for audit history.
+
 ## Local Testing With Docker Postgres
 
 For local development, the fastest way to test the schema and API is to run a

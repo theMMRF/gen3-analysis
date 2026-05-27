@@ -39,6 +39,7 @@ def user_from_claims(claims: Mapping[str, Any]) -> TermsUser:
         claims.get("email")
         or _nested_get(claims, ("context", "user", "email"))
         or claims.get("preferred_username")
+        or _nested_get(claims, ("context", "user", "username"))
     )
     if not email:
         raise HTTPException(

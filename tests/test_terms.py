@@ -116,6 +116,19 @@ def test_user_from_claims_falls_back_to_context_user():
     assert user.name == "Nested User"
 
 
+def test_user_from_claims_falls_back_to_context_username():
+    user = user_from_claims(
+        {
+            "sub": "dev-user-1",
+            "context": {"user": {"username": "dev.user@example.org", "name": "Dev User"}},
+        }
+    )
+
+    assert user.user_id == "dev-user-1"
+    assert user.email == "dev.user@example.org"
+    assert user.name == "Dev User"
+
+
 def test_user_from_claims_requires_email():
     with pytest.raises(HTTPException) as exc_info:
         user_from_claims({"sub": "sub-1"})
