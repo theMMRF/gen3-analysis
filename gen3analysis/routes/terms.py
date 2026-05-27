@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from starlette import status
 
@@ -15,7 +15,7 @@ from gen3analysis.terms_acceptance.service import (
     accept_current_terms,
     get_current_terms_version,
     has_accepted_latest_terms,
-    user_from_claims,
+    resolve_terms_user,
 )
 
 terms = APIRouter()
@@ -53,11 +53,18 @@ async def current_terms(
     summary="Check whether the authenticated user accepted the current terms",
 )
 async def terms_status(
+    request: Request,
     auth: Auth = Depends(Auth),
     sessionmaker: async_sessionmaker = Depends(get_terms_acceptance_sessionmaker),
 ) -> TermsStatusResponse:
     claims = await auth.get_token_claims()
-    user = user_from_claims(claims)
+    token = await auth.get_access_token()
+    user = resolve_terms_user(
+        claims,
+        raw_token=token,
+        header_email=request.headers.get("x-user-email"),
+        header_name=request.headers.get("x-user-name"),
+    )
 
     async with sessionmaker() as session:
         terms_version = await get_current_terms_version(session)
@@ -77,11 +84,18 @@ async def terms_status(
 )
 async def accept_terms(
     body: TermsAcceptanceRequest,
+    request: Request,
     auth: Auth = Depends(Auth),
     sessionmaker: async_sessionmaker = Depends(get_terms_acceptance_sessionmaker),
 ) -> TermsAcceptanceResponse:
     claims = await auth.get_token_claims()
-    user = user_from_claims(claims)
+    token = await auth.get_access_token()
+    user = resolve_terms_user(
+        claims,
+        raw_token=token,
+        header_email=request.headers.get("x-user-email"),
+        header_name=request.headers.get("x-user-name"),
+    )
 
     async with sessionmaker() as session:
         inserted = await accept_current_terms(session, user, body.terms_version_id)

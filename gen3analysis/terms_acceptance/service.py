@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Mapping, Optional
 
+import jwt
 from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,6 +41,7 @@ def user_from_claims(claims: Mapping[str, Any]) -> TermsUser:
         or _nested_get(claims, ("context", "user", "email"))
         or claims.get("preferred_username")
         or _nested_get(claims, ("context", "user", "username"))
+        or _nested_get(claims, ("context", "user", "preferred_username"))
     )
     if not email:
         raise HTTPException(
@@ -48,8 +50,68 @@ def user_from_claims(claims: Mapping[str, Any]) -> TermsUser:
         )
 
     user_id = str(claims.get("sub") or email)
-    name = claims.get("name") or _nested_get(claims, ("context", "user", "name"))
+    name = (
+        claims.get("name")
+        or _nested_get(claims, ("context", "user", "name"))
+        or _nested_get(claims, ("context", "user", "display_name"))
+    )
     return TermsUser(user_id=user_id, email=str(email), name=name)
+
+
+def enrich_claims_from_raw_token(
+    claims: Mapping[str, Any],
+    raw_token: Optional[str],
+) -> dict[str, Any]:
+    """
+    authutils validates tokens but may return a flattened claims dict that omits
+    nested Gen3 fields such as context.user.email. Merge those back in from the
+    already-validated raw token payload.
+    """
+    if not raw_token:
+        return dict(claims)
+
+    enriched = dict(claims)
+
+    try:
+        raw_claims = jwt.decode(raw_token, options={"verify_signature": False})
+    except jwt.PyJWTError:
+        return enriched
+
+    for key in ("context", "email", "preferred_username", "name"):
+        value = raw_claims.get(key)
+        if value is None:
+            continue
+        if key not in enriched or enriched.get(key) in (None, {}, ""):
+            enriched[key] = value
+
+    return enriched
+
+
+def resolve_terms_user(
+    claims: Mapping[str, Any],
+    *,
+    raw_token: Optional[str] = None,
+    header_email: Optional[str] = None,
+    header_name: Optional[str] = None,
+) -> TermsUser:
+    enriched_claims = enrich_claims_from_raw_token(claims, raw_token)
+
+    try:
+        return user_from_claims(enriched_claims)
+    except HTTPException as exc:
+        normalized_email = header_email.strip() if header_email else None
+        if exc.status_code != status.HTTP_401_UNAUTHORIZED or not normalized_email:
+            raise
+
+        user_id = str(enriched_claims.get("sub") or normalized_email)
+        name = (
+            header_name.strip()
+            if header_name
+            else enriched_claims.get("name")
+            or _nested_get(enriched_claims, ("context", "user", "name"))
+            or _nested_get(enriched_claims, ("context", "user", "display_name"))
+        )
+        return TermsUser(user_id=user_id, email=normalized_email, name=name)
 
 
 def _version_from_row(row: Any) -> TermsVersion:

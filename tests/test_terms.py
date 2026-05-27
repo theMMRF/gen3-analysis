@@ -6,7 +6,11 @@ from fastapi import HTTPException
 
 from gen3analysis.auth import Auth
 from gen3analysis.routes.terms import get_terms_acceptance_sessionmaker
-from gen3analysis.terms_acceptance.service import user_from_claims
+from gen3analysis.terms_acceptance.service import (
+    enrich_claims_from_raw_token,
+    resolve_terms_user,
+    user_from_claims,
+)
 
 
 CURRENT_TERMS = SimpleNamespace(
@@ -134,6 +138,37 @@ def test_user_from_claims_requires_email():
         user_from_claims({"sub": "sub-1"})
 
     assert exc_info.value.status_code == 401
+
+
+def test_resolve_terms_user_uses_trusted_header_when_claims_lack_email():
+    user = resolve_terms_user(
+        {"sub": "sub-1"},
+        header_email="nav.user@example.org",
+        header_name="Nav User",
+    )
+
+    assert user.user_id == "sub-1"
+    assert user.email == "nav.user@example.org"
+    assert user.name == "Nav User"
+
+
+def test_enrich_claims_from_raw_token_restores_context_user_email():
+    import jwt
+
+    raw_token = jwt.encode(
+        {
+            "sub": "sub-1",
+            "context": {"user": {"email": "nested@example.org", "name": "Nested User"}},
+        },
+        "secret",
+        algorithm="HS256",
+    )
+
+    enriched = enrich_claims_from_raw_token({"sub": "sub-1"}, raw_token)
+    user = user_from_claims(enriched)
+
+    assert user.email == "nested@example.org"
+    assert user.name == "Nested User"
 
 
 @pytest.mark.asyncio
