@@ -218,6 +218,104 @@ kubectl exec deploy/gen3-analysis-deployment -- \
 Users who accepted an older version will need to accept again; existing
 acceptance rows are preserved for audit history.
 
+### 7. Verify acceptance and export records
+
+#### Check via the API
+
+Use your bearer token to confirm the authenticated user accepted the current
+terms version:
+
+```bash
+curl -s https://YOUR_HOST/analysis/v0/terms/status \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+Expected response when accepted:
+
+```json
+{
+  "has_accepted_latest_terms": true,
+  "current_terms": {
+    "id": 1,
+    "version": "dev-2026-05-22",
+    "...": "..."
+  }
+}
+```
+
+From inside the pod:
+
+```bash
+kubectl exec deploy/gen3-analysis-deployment -- \
+  curl -s http://127.0.0.1:8000/analysis/v0/terms/status \
+    -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+#### Export acceptance records from the database
+
+The helper script exports acceptance rows joined with terms version metadata to
+CSV by default. CSV opens directly in Excel and is suitable to share with legal
+or compliance reviewers. Run the export inside the pod, copy the file to squid,
+then upload to S3.
+
+Export all acceptance records:
+
+```bash
+kubectl exec deploy/gen3-analysis-deployment -- \
+  bash -c 'cd /gen3analysis && poetry run python bin/terms_acceptance.py export-acceptances \
+    --output /tmp/terms-acceptances.csv'
+```
+
+Export only the current terms version:
+
+```bash
+kubectl exec deploy/gen3-analysis-deployment -- \
+  bash -c 'cd /gen3analysis && poetry run python bin/terms_acceptance.py export-acceptances \
+    --output /tmp/terms-acceptances-current.csv \
+    --current-only'
+```
+
+Export a single user by email or JWT `sub` (`user_id`):
+
+```bash
+kubectl exec deploy/gen3-analysis-deployment -- \
+  bash -c 'cd /gen3analysis && poetry run python bin/terms_acceptance.py export-acceptances \
+    --output /tmp/terms-acceptance-user.csv \
+    --email you@example.com'
+
+kubectl exec deploy/gen3-analysis-deployment -- \
+  bash -c 'cd /gen3analysis && poetry run python bin/terms_acceptance.py export-acceptances \
+    --output /tmp/terms-acceptance-user.csv \
+    --user-id YOUR_JWT_SUB'
+```
+
+JSON export is also supported with `--format json`.
+
+Copy the export file from the pod to squid:
+
+```bash
+kubectl cp deploy/gen3-analysis-deployment:/tmp/terms-acceptances.csv \
+  /tmp/terms-acceptances.csv
+```
+
+If `kubectl cp` fails during a rollout, copy from a specific pod name instead.
+
+Upload to S3:
+
+```bash
+aws s3 cp /tmp/terms-acceptances.csv \
+  s3://YOUR_BUCKET/path/terms-acceptances/terms-acceptances-$(date -u +%Y%m%dT%H%M%SZ).csv
+```
+
+CSV columns include human-readable headers such as:
+
+- `Email`, `Name`
+- `Terms Version`, `Accepted At (UTC)`, `Current Terms Version` (`Yes`/`No`)
+- `User ID`, `Terms Effective At (UTC)`, `Terms Version ID`
+
+The export does not include full `terms_content` text, only version metadata and
+acceptance audit fields.
+
 ## Local Testing With Docker Postgres
 
 For local development, the fastest way to test the schema and API is to run a

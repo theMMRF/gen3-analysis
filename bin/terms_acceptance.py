@@ -1,8 +1,11 @@
 #!/usr/bin/env python
 import argparse
 import asyncio
+import csv
+import json
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from dotenv import load_dotenv
 from sqlalchemy import text
@@ -112,6 +115,136 @@ async def create_version(
         await engine.dispose()
 
 
+ACCEPTANCE_EXPORT_QUERY = """
+select
+    ta.id,
+    ta.user_id,
+    ta.email,
+    ta.name,
+    ta.accepted_at,
+    ta.created_at,
+    tv.id as terms_version_id,
+    tv.version as terms_version,
+    tv.effective_at as terms_effective_at,
+    tv.is_current as terms_is_current
+from terms_acceptances ta
+join terms_versions tv on tv.id = ta.terms_version_id
+where 1 = 1
+"""
+
+EXPORT_CSV_FIELDNAMES = [
+    "email",
+    "name",
+    "terms_version",
+    "accepted_at",
+    "terms_is_current",
+    "user_id",
+    "terms_effective_at",
+    "terms_version_id",
+    "created_at",
+    "id",
+]
+
+EXPORT_CSV_HEADERS = {
+    "email": "Email",
+    "name": "Name",
+    "terms_version": "Terms Version",
+    "accepted_at": "Accepted At (UTC)",
+    "terms_is_current": "Current Terms Version",
+    "user_id": "User ID",
+    "terms_effective_at": "Terms Effective At (UTC)",
+    "terms_version_id": "Terms Version ID",
+    "created_at": "Record Created At (UTC)",
+    "id": "Acceptance Record ID",
+}
+
+
+def serialize_export_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
+
+
+def serialize_csv_value(key: str, value: Any) -> Any:
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            value = value.astimezone(timezone.utc)
+        return value.strftime("%Y-%m-%d %H:%M:%S UTC")
+    if key == "terms_is_current":
+        return "Yes" if value else "No"
+    if value is None:
+        return ""
+    return value
+
+
+def row_to_export_dict(row) -> dict[str, Any]:
+    return {
+        key: serialize_export_value(value)
+        for key, value in row._mapping.items()
+    }
+
+
+async def export_acceptances(
+    engine,
+    output_path: Path,
+    output_format: str,
+    user_id: Optional[str],
+    email: Optional[str],
+    current_only: bool,
+) -> int:
+    query = ACCEPTANCE_EXPORT_QUERY
+    params: dict[str, Any] = {}
+
+    if user_id:
+        query += " and ta.user_id = :user_id"
+        params["user_id"] = user_id
+    if email:
+        query += " and lower(ta.email) = lower(:email)"
+        params["email"] = email
+    if current_only:
+        query += " and tv.is_current = true"
+
+    query += " order by ta.accepted_at desc, ta.id desc"
+
+    try:
+        async with engine.connect() as conn:
+            result = await conn.execute(text(query), params)
+            rows = [row_to_export_dict(row) for row in result]
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if output_format == "json":
+            output_path.write_text(
+                json.dumps(rows, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        else:
+            with output_path.open("w", encoding="utf-8", newline="") as handle:
+                handle.write("\ufeff")
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=EXPORT_CSV_FIELDNAMES,
+                    extrasaction="ignore",
+                )
+                writer.writerow(
+                    {
+                        field: EXPORT_CSV_HEADERS[field]
+                        for field in EXPORT_CSV_FIELDNAMES
+                    }
+                )
+                for row in rows:
+                    writer.writerow(
+                        {
+                            field: serialize_csv_value(field, row.get(field))
+                            for field in EXPORT_CSV_FIELDNAMES
+                        }
+                    )
+
+        return len(rows)
+    finally:
+        await engine.dispose()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Manage the terms_acceptance database schema and versions."
@@ -141,6 +274,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     create_parser.add_argument("--make-current", action="store_true")
 
+    export_parser = subparsers.add_parser(
+        "export-acceptances",
+        help="Export terms acceptance records to CSV or JSON",
+    )
+    export_parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Path to write the export file",
+    )
+    export_parser.add_argument(
+        "--format",
+        choices=["csv", "json"],
+        default="csv",
+        help="Export format (default: csv)",
+    )
+    export_parser.add_argument(
+        "--user-id",
+        help="Filter to a single user_id (JWT sub claim)",
+    )
+    export_parser.add_argument(
+        "--email",
+        help="Filter to a single email address",
+    )
+    export_parser.add_argument(
+        "--current-only",
+        action="store_true",
+        help="Only include acceptances for the current terms version",
+    )
+
     return parser
 
 
@@ -162,6 +325,16 @@ async def main() -> None:
             effective_at=args.effective_at,
             make_current=args.make_current,
         )
+    elif args.command == "export-acceptances":
+        row_count = await export_acceptances(
+            engine=engine,
+            output_path=args.output,
+            output_format=args.format,
+            user_id=args.user_id,
+            email=args.email,
+            current_only=args.current_only,
+        )
+        print(f"Exported {row_count} acceptance record(s) to {args.output}")
 
 
 if __name__ == "__main__":
