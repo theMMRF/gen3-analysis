@@ -40,6 +40,7 @@ class Auth:
         api_request: Request,
         bearer_token: HTTPAuthorizationCredentials = Security(bearer),
     ) -> None:
+        self.api_request = api_request
         self.app = api_request.app
         self.arborist_client = self.app.state.arborist_client
         self.bearer_token = bearer_token
@@ -58,6 +59,8 @@ class Auth:
             if self.bearer_token and hasattr(self.bearer_token, "credentials")
             else None
         )
+        if not token:
+            token = self.api_request.cookies.get("access_token")
         if not token and settings.DEPLOYMENT_TYPE == "dev":
             token = await self.app.state.gen3_sdk_auth.get_access_token()
 
@@ -67,7 +70,16 @@ class Auth:
         # if config.MOCK_AUTH:
         #     return {"sub": 64, "context": {"user": {"name": "mocked-user"}}}
 
-        if not self.bearer_token:
+        bearer_token = self.bearer_token
+        if not bearer_token:
+            token = self.api_request.cookies.get("access_token")
+            if token:
+                bearer_token = HTTPAuthorizationCredentials(
+                    scheme="Bearer",
+                    credentials=token,
+                )
+
+        if not bearer_token:
             err_msg = "Must provide an access token"
             logger.error(err_msg)
             raise HTTPException(
@@ -78,7 +90,7 @@ class Auth:
         try:
             token_claims = await access_token(
                 "user", "openid", audience="openid", purpose="access"
-            )(self.bearer_token)
+            )(bearer_token)
         except Exception as e:
             err_msg = "Could not verify, parse, and/or validate provided access token"
             logger.error(
