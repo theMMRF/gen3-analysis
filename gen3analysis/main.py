@@ -14,6 +14,11 @@ from gen3analysis.auth import Gen3SdkAuth
 from gen3analysis.gen3.es_client import get_nested_registry
 from gen3analysis.gen3.guppyQuery import GuppyGQLClient
 from gen3analysis.settings import settings, logger
+from gen3analysis.terms_acceptance.database import (
+    create_terms_acceptance_engine,
+    create_terms_acceptance_sessionmaker,
+    get_terms_database_config,
+)
 
 route_aggregator = APIRouter()
 
@@ -46,6 +51,7 @@ ALL_ROUTE_DEFINITIONS = {
         "/cnv_occurrence",
         ["CNV Occurrence"],
     ),
+    "terms": ("gen3analysis.routes.terms", "terms", "/terms", ["Terms"]),
 }
 
 # Get enabled routes from environment variable
@@ -116,6 +122,16 @@ async def lifespan(app: FastAPI):
             "gen3analysis.gen3authz", log_level="debug" if settings.DEBUG else "info"
         ),
     )
+    if "terms" in enabled_routes:
+        app.state.terms_acceptance_engine = create_terms_acceptance_engine(
+            get_terms_database_config(settings)
+        )
+        app.state.terms_acceptance_sessionmaker = create_terms_acceptance_sessionmaker(
+            app.state.terms_acceptance_engine
+        )
+    else:
+        app.state.terms_acceptance_engine = None
+        app.state.terms_acceptance_sessionmaker = None
 
     # Initialize gene expression data store
     if settings.ENABLED_ROUTES and "gene_expression" in settings.ENABLED_ROUTES:
@@ -152,6 +168,10 @@ async def lifespan(app: FastAPI):
     app.state.gdc_graphql_client = None
     app.state.gen3_sdk_auth = None
     app.state.arborist_client = None
+    if app.state.terms_acceptance_engine:
+        await app.state.terms_acceptance_engine.dispose()
+    app.state.terms_acceptance_engine = None
+    app.state.terms_acceptance_sessionmaker = None
 
     # Reset gene expression data store
     if settings.GENE_EXPRESSION_ENABLED:

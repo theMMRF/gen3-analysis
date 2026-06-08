@@ -27,7 +27,11 @@ FROM base
 
 COPY --from=builder /${appname} /${appname}
 
-RUN dnf -y install vim
+# curl-minimal is already in the base image; do not install the curl package.
+RUN dnf -y install vim \
+    && curl -fsSL -o /etc/ssl/certs/rds-global-bundle.pem \
+        https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+    && chmod 644 /etc/ssl/certs/rds-global-bundle.pem
 
 ENV GENE_EXPRESSION_SQLITE_PATH=/opt/mmrf_gene_expression_test_data/schemaless.sqlite3
 ENV GENE_EXPRESSION_DATA_DIR=/opt/mmrf_gene_expression_test_data/mmrf_test_data

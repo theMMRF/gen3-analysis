@@ -1,0 +1,1 @@
+"""Terms acceptance API support."""

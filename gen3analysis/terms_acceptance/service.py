@@ -1,0 +1,210 @@
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Mapping, Optional
+
+import jwt
+from fastapi import HTTPException
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+from starlette import status
+
+
+@dataclass(frozen=True)
+class TermsUser:
+    user_id: str
+    email: str
+    name: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class TermsVersion:
+    id: int
+    version: str
+    effective_at: datetime
+    terms_url: Optional[str]
+    terms_content: str
+    content_format: str
+
+
+def _nested_get(data: Mapping[str, Any], path: tuple[str, ...]) -> Optional[Any]:
+    current: Any = data
+    for key in path:
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(key)
+    return current
+
+
+def user_from_claims(claims: Mapping[str, Any]) -> TermsUser:
+    email = (
+        claims.get("email")
+        or _nested_get(claims, ("context", "user", "email"))
+        or claims.get("preferred_username")
+        or _nested_get(claims, ("context", "user", "username"))
+        or _nested_get(claims, ("context", "user", "preferred_username"))
+    )
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authenticated user email is required to accept terms",
+        )
+
+    user_id = str(claims.get("sub") or email)
+    name = (
+        claims.get("name")
+        or _nested_get(claims, ("context", "user", "name"))
+        or _nested_get(claims, ("context", "user", "display_name"))
+    )
+    return TermsUser(user_id=user_id, email=str(email), name=name)
+
+
+def enrich_claims_from_raw_token(
+    claims: Mapping[str, Any],
+    raw_token: Optional[str],
+) -> dict[str, Any]:
+    """
+    authutils validates tokens but may return a flattened claims dict that omits
+    nested Gen3 fields such as context.user.email. Merge those back in from the
+    already-validated raw token payload.
+    """
+    if not raw_token:
+        return dict(claims)
+
+    enriched = dict(claims)
+
+    try:
+        raw_claims = jwt.decode(raw_token, options={"verify_signature": False})
+    except jwt.PyJWTError:
+        return enriched
+
+    for key in ("context", "email", "preferred_username", "name"):
+        value = raw_claims.get(key)
+        if value is None:
+            continue
+        if key not in enriched or enriched.get(key) in (None, {}, ""):
+            enriched[key] = value
+
+    return enriched
+
+
+def resolve_terms_user(
+    claims: Mapping[str, Any],
+    *,
+    raw_token: Optional[str] = None,
+    header_email: Optional[str] = None,
+    header_name: Optional[str] = None,
+) -> TermsUser:
+    enriched_claims = enrich_claims_from_raw_token(claims, raw_token)
+
+    try:
+        return user_from_claims(enriched_claims)
+    except HTTPException as exc:
+        normalized_email = header_email.strip() if header_email else None
+        if exc.status_code != status.HTTP_401_UNAUTHORIZED or not normalized_email:
+            raise
+
+        user_id = str(enriched_claims.get("sub") or normalized_email)
+        name = (
+            header_name.strip()
+            if header_name
+            else enriched_claims.get("name")
+            or _nested_get(enriched_claims, ("context", "user", "name"))
+            or _nested_get(enriched_claims, ("context", "user", "display_name"))
+        )
+        return TermsUser(user_id=user_id, email=normalized_email, name=name)
+
+
+def _version_from_row(row: Any) -> TermsVersion:
+    return TermsVersion(
+        id=row.id,
+        version=row.version,
+        effective_at=row.effective_at,
+        terms_url=row.terms_url,
+        terms_content=row.terms_content,
+        content_format=row.content_format,
+    )
+
+
+async def get_current_terms_version(session: AsyncSession) -> TermsVersion:
+    result = await session.execute(
+        text(
+            """
+            select id, version, effective_at, terms_url, terms_content, content_format
+            from terms_versions
+            where is_current = true
+            """
+        )
+    )
+    row = result.one_or_none()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Current terms version is not configured",
+        )
+
+    return _version_from_row(row)
+
+
+async def has_accepted_latest_terms(
+    session: AsyncSession,
+    user_id: str,
+    terms_version_id: int,
+) -> bool:
+    result = await session.execute(
+        text(
+            """
+            select exists (
+              select 1
+              from terms_acceptances ta
+              where ta.user_id = :user_id
+                and ta.terms_version_id = :terms_version_id
+            ) as has_accepted_latest_terms
+            """
+        ),
+        {"user_id": user_id, "terms_version_id": terms_version_id},
+    )
+    return bool(result.scalar_one())
+
+
+async def accept_current_terms(
+    session: AsyncSession,
+    user: TermsUser,
+    terms_version_id: int,
+) -> bool:
+    result = await session.execute(
+        text(
+            """
+            insert into terms_acceptances (
+                user_id,
+                email,
+                name,
+                terms_version_id
+            )
+            select
+                :user_id,
+                :email,
+                :name,
+                :terms_version_id
+            from terms_versions
+            where id = :terms_version_id
+              and is_current = true
+            on conflict (user_id, terms_version_id) do nothing
+            """
+        ),
+        {
+            "user_id": user.user_id,
+            "email": user.email,
+            "name": user.name,
+            "terms_version_id": terms_version_id,
+        },
+    )
+    if result.rowcount == 0:
+        current_terms = await get_current_terms_version(session)
+        if terms_version_id != current_terms.id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Submitted terms version is no longer current",
+            )
+
+    await session.commit()
+    return result.rowcount > 0

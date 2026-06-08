@@ -34,3 +34,4 @@ The documentation can be browsed in the [docs](docs) folder, and key documents a
 
 * [Detailed API Documentation](http://petstore.swagger.io/?url=https://raw.githubusercontent.com/uc-cdis/gen3-analysis/main/docs/openapi.yaml)
 * [Quickstart](docs/quickstart.md)
+* [Terms & Conditions acceptance](docs/terms_acceptance.md) — schema, API, and deployed environment setup
