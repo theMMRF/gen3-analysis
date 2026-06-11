@@ -38,6 +38,10 @@ Gen3GraphQLQuery = f"""query SurvivalCaseQuery($filter: JSON) {{
         diagnoses {{
             days_to_last_follow_up
         }}
+        outcomes {{
+            survival_time_pfs
+            censor_pfs
+        }}
     }}
     {settings.case_centric_agg_gql} {{
         {settings.CASE_CENTRIC_INDEX}(filter: $filter, accessibility: accessible) {{
@@ -48,7 +52,35 @@ Gen3GraphQLQuery = f"""query SurvivalCaseQuery($filter: JSON) {{
 """
 
 
-def transform(data) -> pd.DataFrame:
+def parse_event_flag(value) -> Optional[int]:
+    """Parse a submitted 0/1 or boolean-like event flag."""
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return int(value)
+
+    if isinstance(value, (int, float)):
+        if value in {0, 1}:
+            return int(value)
+        return None
+
+    if isinstance(value, str):
+        normalized_value = value.strip().lower()
+        if normalized_value in {"1", "true", "yes", "y"}:
+            return 1
+        if normalized_value in {"0", "false", "no", "n"}:
+            return 0
+        try:
+            numeric_value = float(normalized_value)
+        except ValueError:
+            return None
+        return parse_event_flag(numeric_value)
+
+    return None
+
+
+def transform_overall_survival(data) -> pd.DataFrame:
     """Transform the Gen3 data into a pandas DataFrame suitable for lifelines."""
     records = []
 
@@ -85,6 +117,35 @@ def transform(data) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
+def transform_progression_free_survival(data) -> pd.DataFrame:
+    """Transform PFS outcomes into a pandas DataFrame suitable for lifelines."""
+    records = []
+
+    for case in data:
+        outcomes = case.get("outcomes") or []
+        if isinstance(outcomes, dict):
+            outcomes = [outcomes]
+
+        for outcome in outcomes:
+            duration = outcome.get("survival_time_pfs")
+            event = parse_event_flag(outcome.get("censor_pfs"))
+            if duration is None or event is None:
+                continue
+
+            records.append(
+                {
+                    "duration": duration,
+                    "event": event,
+                    "case_id": case.get("case_id"),
+                    "submitter_id": case.get("submitter_id"),
+                    "project_id": glom(case, "project.project_id", default="---"),
+                }
+            )
+            break
+
+    return pd.DataFrame(records)
+
+
 async def get_curve(filters, gen3_graphql_client, access_token=None):
     query_filter = {
         "and": [
@@ -96,6 +157,9 @@ async def get_curve(filters, gen3_graphql_client, access_token=None):
                     },
                     {
                         ">": {"diagnoses.days_to_last_follow_up": 0},
+                    },
+                    {
+                        ">": {"outcomes.survival_time_pfs": 0},
                     },
                 ]
             },
@@ -118,7 +182,15 @@ async def get_curve(filters, gen3_graphql_client, access_token=None):
     ):
         return None
     data_root = glom(data, f"data.{settings.case_centric_gql}", default={})
-    df = transform(data_root)
+    return {
+        "overall_survival": calculate_curve(transform_overall_survival(data_root)),
+        "progression_free_survival": calculate_curve(
+            transform_progression_free_survival(data_root)
+        ),
+    }
+
+
+def calculate_curve(df: pd.DataFrame):
     if df.empty:
         return None
 
@@ -149,7 +221,7 @@ async def get_curve(filters, gen3_graphql_client, access_token=None):
                     "id": row["case_id"],
                     "submitter_id": row["submitter_id"],
                     "project_id": row["project_id"],
-                    "event_type": "death" if row["event"] == 1 else "censored",
+                    "event_observed": row["event"] == 1,
                 }
                 for _, row in group.iterrows()
             ]
@@ -173,8 +245,8 @@ async def get_curve(filters, gen3_graphql_client, access_token=None):
                 # For donors with events at this time point, use the survival probability
                 # from BEFORE the event (i.e., the previous time point or current if censored)
 
-                if donor["event_type"] == "death":
-                    # For death events, use survival probability from the previous time point
+                if donor["event_observed"]:
+                    # For observed events, use survival probability from the previous time point
                     if i > 0:
                         prev_time_point = timeline_sorted[i - 1]
                         donor_survival_prob = survival_df.loc[prev_time_point].iloc[0]
@@ -192,9 +264,7 @@ async def get_curve(filters, gen3_graphql_client, access_token=None):
                         "submitter_id": donor["submitter_id"],
                         "project_id": donor["project_id"],
                         "survivalEstimate": float(donor_survival_prob),
-                        "censored": (
-                            True if donor["event_type"] == "censored" else False
-                        ),
+                        "censored": not donor["event_observed"],
                     }
                 )
 
@@ -276,17 +346,33 @@ async def plot(
         raise HTTPException(status_code=400, detail="Must have at least one filter")
 
     try:
-        non_empty_curves = []
+        overall_survival_curves = []
+        progression_free_survival_curves = []
         for f in filters:
-            curve = await get_curve(f, gen3_graphql_client, access_token=access_token)
-            if curve:
-                non_empty_curves.append(curve)
+            curves = await get_curve(f, gen3_graphql_client, access_token=access_token)
+            if not curves:
+                continue
 
-        statistics = calculate_survival_statistics(non_empty_curves)
+            overall_survival_curve = curves.get("overall_survival")
+            if overall_survival_curve:
+                overall_survival_curves.append(overall_survival_curve)
+
+            progression_free_survival_curve = curves.get("progression_free_survival")
+            if progression_free_survival_curve:
+                progression_free_survival_curves.append(progression_free_survival_curve)
+
+        statistics = calculate_survival_statistics(overall_survival_curves)
+        progression_free_survival_statistics = calculate_survival_statistics(
+            progression_free_survival_curves
+        )
 
         results = [
             {"meta": curve["meta"], "donors": curve["donors"]}
-            for curve in non_empty_curves
+            for curve in overall_survival_curves
+        ]
+        progression_free_survival_results = [
+            {"meta": curve["meta"], "donors": curve["donors"]}
+            for curve in progression_free_survival_curves
         ]
 
         return JSONResponse(
@@ -294,6 +380,10 @@ async def plot(
             content={
                 "results": results,
                 "overallStats": statistics,
+                "progressionFreeSurvival": {
+                    "results": progression_free_survival_results,
+                    "overallStats": progression_free_survival_statistics,
+                },
             },
         )
 

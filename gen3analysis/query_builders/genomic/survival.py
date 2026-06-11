@@ -100,6 +100,32 @@ def build_gene_survival_query(
                             ),
                         ],
                     ),
+                    Q(
+                        "bool",
+                        must=[
+                            Q(
+                                "nested",
+                                path="outcomes",
+                                ignore_unmapped=True,
+                                query=Q(
+                                    (
+                                        Q(
+                                            "bool",
+                                            must=[
+                                                Q(
+                                                    "range",
+                                                    outcomes__survival_time_pfs={
+                                                        "gt": 0,
+                                                        "boost": 0,
+                                                    },
+                                                ),
+                                            ],
+                                        )
+                                    )
+                                ),
+                            ),
+                        ],
+                    ),
                 ],
             ),
         ],

@@ -12,6 +12,7 @@ mocked_guppy_data = [
                     "case_id": "a88a74e1-4a3f-44e9",
                     "demographic": {"days_to_death": 769, "vital_status": "Dead"},
                     "diagnoses": [{"days_to_last_follow_up": 769}],
+                    "outcomes": [{"survival_time_pfs": 100, "censor_pfs": "1"}],
                     "project": {"project_id": TEST_PROJECT_ID},
                     "submitter_id": "ID_1392",
                 },
@@ -19,6 +20,7 @@ mocked_guppy_data = [
                     "case_id": "4e123b99-32aa-4ef2",
                     "demographic": {"days_to_death": None, "vital_status": "Alive"},
                     "diagnoses": [{"days_to_last_follow_up": 1007}],
+                    "outcomes": [{"survival_time_pfs": 200, "censor_pfs": "0"}],
                     "project": {"project_id": TEST_PROJECT_ID},
                     "submitter_id": "ID_1980",
                 },
@@ -26,6 +28,7 @@ mocked_guppy_data = [
                     "case_id": "07f4512a-7188-4db1",
                     "demographic": {"days_to_death": None, "vital_status": "Alive"},
                     "diagnoses": [{"days_to_last_follow_up": 1467}],
+                    "outcomes": [{"survival_time_pfs": 300, "censor_pfs": "1"}],
                     "project": {"project_id": TEST_PROJECT_ID},
                     "submitter_id": "ID_1325",
                 },
@@ -61,6 +64,7 @@ mocked_guppy_data = [
                     "case_id": "2856f371-6acd-4f41",
                     "demographic": {"days_to_death": 575, "vital_status": "Dead"},
                     "diagnoses": [{"days_to_last_follow_up": 575}],
+                    "outcomes": [{"survival_time_pfs": 110, "censor_pfs": 1}],
                     "project": {"project_id": TEST_PROJECT_ID},
                     "submitter_id": "ID_1960",
                 },
@@ -68,6 +72,7 @@ mocked_guppy_data = [
                     "case_id": "fd8aec27-5a3a-4388",
                     "demographic": {"days_to_death": 574, "vital_status": "Dead"},
                     "diagnoses": [{"days_to_last_follow_up": 574}],
+                    "outcomes": [{"survival_time_pfs": 220, "censor_pfs": 0}],
                     "project": {"project_id": TEST_PROJECT_ID},
                     "submitter_id": "ID_1771",
                 },
@@ -75,6 +80,7 @@ mocked_guppy_data = [
                     "case_id": "a6a339e4-e0f8-41e8",
                     "demographic": {"days_to_death": None, "vital_status": "Alive"},
                     "diagnoses": [{"days_to_last_follow_up": 1352}],
+                    "outcomes": [{"survival_time_pfs": 330, "censor_pfs": 0}],
                     "project": {"project_id": TEST_PROJECT_ID},
                     "submitter_id": "ID_1510",
                 },
@@ -363,6 +369,59 @@ async def test_survival_endpoint(app, client):
         result_json["results"][1]["donors"] == survival_response["results"][1]["donors"]
     )
     assert result_json["overallStats"] == survival_response["overallStats"]
+    assert result_json["progressionFreeSurvival"]["results"][0]["donors"] == [
+        {
+            "time": 100,
+            "id": "a88a74e1-4a3f-44e9",
+            "submitter_id": "ID_1392",
+            "project_id": TEST_PROJECT_ID,
+            "survivalEstimate": 1.0,
+            "censored": False,
+        },
+        {
+            "time": 200,
+            "id": "4e123b99-32aa-4ef2",
+            "submitter_id": "ID_1980",
+            "project_id": TEST_PROJECT_ID,
+            "survivalEstimate": pytest.approx(2 / 3),
+            "censored": True,
+        },
+        {
+            "time": 300,
+            "id": "07f4512a-7188-4db1",
+            "submitter_id": "ID_1325",
+            "project_id": TEST_PROJECT_ID,
+            "survivalEstimate": pytest.approx(2 / 3),
+            "censored": False,
+        },
+    ]
+    assert result_json["progressionFreeSurvival"]["results"][1]["donors"] == [
+        {
+            "time": 110,
+            "id": "2856f371-6acd-4f41",
+            "submitter_id": "ID_1960",
+            "project_id": TEST_PROJECT_ID,
+            "survivalEstimate": 1.0,
+            "censored": False,
+        },
+        {
+            "time": 220,
+            "id": "fd8aec27-5a3a-4388",
+            "submitter_id": "ID_1771",
+            "project_id": TEST_PROJECT_ID,
+            "survivalEstimate": pytest.approx(2 / 3),
+            "censored": True,
+        },
+        {
+            "time": 330,
+            "id": "a6a339e4-e0f8-41e8",
+            "submitter_id": "ID_1510",
+            "project_id": TEST_PROJECT_ID,
+            "survivalEstimate": pytest.approx(2 / 3),
+            "censored": True,
+        },
+    ]
+    assert "overallStats" in result_json["progressionFreeSurvival"]
 
 
 compare_response = {
