@@ -1,4 +1,5 @@
 import json
+from enum import Enum
 from typing import List, Dict, Optional
 
 import pandas as pd
@@ -24,24 +25,123 @@ from gen3analysis.settings import settings
 
 survival = APIRouter()
 
-Gen3GraphQLQuery = f"""query SurvivalCaseQuery($filter: JSON) {{
-    {settings.case_centric_gql}(accessibility: accessible, offset: 0, first: {settings.MAX_CASES}, filter: $filter) {{
-        submitter_id
-        case_id
-        project {{
+
+class SurvivalType(str, Enum):
+    OVERALL = "overall"
+    PFS = "pfs"
+    BOTH = "both"
+
+
+class CurveMeta(BaseModel):
+    id: int = Field(description="Unique identifier for this returned curve.")
+
+
+class SurvivalDonor(BaseModel):
+    time: int = Field(description="Duration in days for this donor event or censoring.")
+    id: Optional[str] = Field(default=None, description="Case UUID.")
+    submitter_id: Optional[str] = Field(
+        default=None, description="Case submitter identifier."
+    )
+    project_id: Optional[str] = Field(default=None, description="Project identifier.")
+    survivalEstimate: float = Field(
+        description="Kaplan-Meier survival estimate at this donor's time point."
+    )
+    censored: bool = Field(
+        description="True when this donor was censored at this time point."
+    )
+
+
+class SurvivalCurve(BaseModel):
+    meta: CurveMeta
+    donors: List[SurvivalDonor] = Field(
+        description="Donor-level points used to render the survival curve."
+    )
+
+
+class SurvivalStatistics(BaseModel):
+    pValue: Optional[float] = Field(
+        default=None,
+        description="Log-rank test p-value. Present when comparing at least two curves.",
+    )
+    degreesFreedom: Optional[int] = Field(
+        default=None,
+        description="Log-rank test degrees of freedom. Present when comparing at least two curves.",
+    )
+
+
+class SurvivalMeasureResponse(BaseModel):
+    results: List[SurvivalCurve] = Field(
+        description="Survival curves for each requested cohort filter."
+    )
+    overallStats: SurvivalStatistics = Field(
+        description="Statistics calculated across returned curves."
+    )
+
+
+class SurvivalPlotResponse(BaseModel):
+    results: Optional[List[SurvivalCurve]] = Field(
+        default=None,
+        description="Overall survival curves. Returned for survivalType 'overall' and 'both'.",
+    )
+    overallStats: Optional[SurvivalStatistics] = Field(
+        default=None,
+        description="Overall survival statistics. Returned for survivalType 'overall' and 'both'.",
+    )
+    progressionFreeSurvival: Optional[SurvivalMeasureResponse] = Field(
+        default=None,
+        description="Progression-free survival curves and statistics. Returned for survivalType 'pfs' and 'both'.",
+    )
+
+
+def includes_overall_survival(survival_type: SurvivalType) -> bool:
+    return survival_type in {SurvivalType.OVERALL, SurvivalType.BOTH}
+
+
+def includes_progression_free_survival(survival_type: SurvivalType) -> bool:
+    return survival_type in {SurvivalType.PFS, SurvivalType.BOTH}
+
+
+def build_survival_query(survival_type: SurvivalType) -> str:
+    fields = [
+        "submitter_id",
+        "case_id",
+        """
+        project {
             project_id
-        }}
-        demographic {{
+        }
+        """,
+    ]
+
+    if includes_overall_survival(survival_type):
+        fields.extend(
+            [
+                """
+        demographic {
             days_to_death
             vital_status
-        }}
-        diagnoses {{
+        }
+        """,
+                """
+        diagnoses {
             days_to_last_follow_up
-        }}
-        outcomes {{
+        }
+        """,
+            ]
+        )
+
+    if includes_progression_free_survival(survival_type):
+        fields.append(
+            """
+        outcomes {
             survival_time_pfs
             censor_pfs
-        }}
+        }
+        """
+        )
+
+    return f"""query SurvivalCaseQuery($filter: JSON) {{
+    {settings.case_centric_gql}(accessibility: accessible, offset: 0, first: {settings.MAX_CASES}, filter: $filter) {{
+        {"".join(fields)}
     }}
     {settings.case_centric_agg_gql} {{
         {settings.CASE_CENTRIC_INDEX}(filter: $filter, accessibility: accessible) {{
@@ -50,6 +150,34 @@ Gen3GraphQLQuery = f"""query SurvivalCaseQuery($filter: JSON) {{
     }}
 }}
 """
+
+
+def build_survival_data_filter(survival_type: SurvivalType) -> Dict:
+    filters = []
+
+    if includes_overall_survival(survival_type):
+        filters.extend(
+            [
+                {
+                    ">": {"demographic.days_to_death": 0},
+                },
+                {
+                    ">": {"diagnoses.days_to_last_follow_up": 0},
+                },
+            ]
+        )
+
+    if includes_progression_free_survival(survival_type):
+        filters.append(
+            {
+                ">": {"outcomes.survival_time_pfs": 0},
+            }
+        )
+
+    if len(filters) == 1:
+        return filters[0]
+
+    return {"or": filters}
 
 
 def parse_event_flag(value) -> Optional[int]:
@@ -146,28 +274,21 @@ def transform_progression_free_survival(data) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
-async def get_curve(filters, gen3_graphql_client, access_token=None):
+async def get_curve(
+    filters,
+    gen3_graphql_client,
+    access_token=None,
+    survival_type: SurvivalType = SurvivalType.OVERALL,
+):
     query_filter = {
         "and": [
             filters,
-            {
-                "or": [
-                    {
-                        ">": {"demographic.days_to_death": 0},
-                    },
-                    {
-                        ">": {"diagnoses.days_to_last_follow_up": 0},
-                    },
-                    {
-                        ">": {"outcomes.survival_time_pfs": 0},
-                    },
-                ]
-            },
+            build_survival_data_filter(survival_type),
         ]
     }
     data = await gen3_graphql_client.execute(
         access_token=access_token,
-        query=Gen3GraphQLQuery,
+        query=build_survival_query(survival_type),
         variables={"filter": query_filter},
         retry_count=1,
     )
@@ -181,13 +302,20 @@ async def get_curve(filters, gen3_graphql_client, access_token=None):
         == 0
     ):
         return None
-    data_root = glom(data, f"data.{settings.case_centric_gql}", default={})
-    return {
-        "overall_survival": calculate_curve(transform_overall_survival(data_root)),
-        "progression_free_survival": calculate_curve(
+    data_root = glom(data, f"data.{settings.case_centric_gql}", default=[])
+
+    curves = {}
+    if includes_overall_survival(survival_type):
+        curves["overall_survival"] = calculate_curve(
+            transform_overall_survival(data_root)
+        )
+
+    if includes_progression_free_survival(survival_type):
+        curves["progression_free_survival"] = calculate_curve(
             transform_progression_free_survival(data_root)
-        ),
-    }
+        )
+
+    return curves
 
 
 def calculate_curve(df: pd.DataFrame):
@@ -309,14 +437,31 @@ def calculate_survival_statistics(non_empty_curves: List[Dict]) -> Dict:
 
 # Define a Pydantic model for the request body
 class PlotRequest(BaseModel):
-    filters: List[Dict]
+    filters: List[Dict] = Field(
+        description="Cohort filters. Each filter returns one survival curve."
+    )
+    survivalType: SurvivalType = Field(
+        default=SurvivalType.OVERALL,
+        description=(
+            "Survival measurement to return. Defaults to 'overall' for backward "
+            "compatibility. Use 'pfs' for progression-free survival or 'both' to "
+            "return both measurements."
+        ),
+    )
 
 
 @survival.post(
     path="/",
     dependencies=[Depends(get_guppy_client)],
     status_code=status.HTTP_200_OK,
-    description="Retrieves the survival plot(s) for the given filters. An array of filters is provided and will return an array of survival plot data",
+    response_model=SurvivalPlotResponse,
+    response_model_exclude_none=True,
+    description=(
+        "Retrieves survival curve data for the given cohort filters. By default, "
+        "the endpoint returns only overall survival to preserve the original "
+        "response shape. Set survivalType to 'pfs' for progression-free survival "
+        "or 'both' to return both measurements."
+    ),
     summary="Survival plots for cohort represented as filters",
     responses={
         status.HTTP_200_OK: {"description": "Successfully processed the survival plot"},
@@ -339,8 +484,9 @@ async def plot(
     access_token: Optional[str] = Cookie(None),
     gen3_graphql_client: GuppyGQLClient = Depends(get_guppy_client),
     auth: Auth = Depends(Auth),
-) -> JSONResponse:
+) -> Dict:
     filters = body.filters
+    survival_type = body.survivalType
 
     if filters is None or len(filters) == 0:
         raise HTTPException(status_code=400, detail="Must have at least one filter")
@@ -349,43 +495,54 @@ async def plot(
         overall_survival_curves = []
         progression_free_survival_curves = []
         for f in filters:
-            curves = await get_curve(f, gen3_graphql_client, access_token=access_token)
+            curves = await get_curve(
+                f,
+                gen3_graphql_client,
+                access_token=access_token,
+                survival_type=survival_type,
+            )
             if not curves:
                 continue
 
-            overall_survival_curve = curves.get("overall_survival")
-            if overall_survival_curve:
-                overall_survival_curves.append(overall_survival_curve)
+            if includes_overall_survival(survival_type):
+                overall_survival_curve = curves.get("overall_survival")
+                if overall_survival_curve:
+                    overall_survival_curves.append(overall_survival_curve)
 
-            progression_free_survival_curve = curves.get("progression_free_survival")
-            if progression_free_survival_curve:
-                progression_free_survival_curves.append(progression_free_survival_curve)
+            if includes_progression_free_survival(survival_type):
+                progression_free_survival_curve = curves.get(
+                    "progression_free_survival"
+                )
+                if progression_free_survival_curve:
+                    progression_free_survival_curves.append(
+                        progression_free_survival_curve
+                    )
 
-        statistics = calculate_survival_statistics(overall_survival_curves)
-        progression_free_survival_statistics = calculate_survival_statistics(
-            progression_free_survival_curves
-        )
+        content = {}
 
-        results = [
-            {"meta": curve["meta"], "donors": curve["donors"]}
-            for curve in overall_survival_curves
-        ]
-        progression_free_survival_results = [
-            {"meta": curve["meta"], "donors": curve["donors"]}
-            for curve in progression_free_survival_curves
-        ]
+        if includes_overall_survival(survival_type):
+            content["results"] = [
+                {"meta": curve["meta"], "donors": curve["donors"]}
+                for curve in overall_survival_curves
+            ]
+            content["overallStats"] = calculate_survival_statistics(
+                overall_survival_curves
+            )
 
-        return JSONResponse(
-            status_code=status.HTTP_200_OK,
-            content={
-                "results": results,
-                "overallStats": statistics,
-                "progressionFreeSurvival": {
-                    "results": progression_free_survival_results,
-                    "overallStats": progression_free_survival_statistics,
-                },
-            },
-        )
+        if includes_progression_free_survival(survival_type):
+            progression_free_survival_results = [
+                {"meta": curve["meta"], "donors": curve["donors"]}
+                for curve in progression_free_survival_curves
+            ]
+            progression_free_survival_statistics = calculate_survival_statistics(
+                progression_free_survival_curves
+            )
+            content["progressionFreeSurvival"] = {
+                "results": progression_free_survival_results,
+                "overallStats": progression_free_survival_statistics,
+            }
+
+        return content
 
     except ValueError as e:
         logger.error(f"Error while processing survival plot: {e}")

@@ -12,6 +12,7 @@ def mock_guppy_data(app, data_list):
     # AsyncMock is specifically designed for async functions
     mocked_execute_function = AsyncMock(side_effect=data_list)
     mocked_guppy_client.execute = mocked_execute_function
+    mocked_guppy_client.close = AsyncMock()
     app.state.guppy_client = mocked_guppy_client
 
 

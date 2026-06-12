@@ -343,33 +343,8 @@ survival_response = {
 }
 
 
-@pytest.mark.asyncio
-async def test_survival_endpoint(app, client):
-    filters = {
-        "filters": [
-            {"and": [{"nested": {"path": "demographic", "in": {"race": ["other"]}}}]},
-            {"and": [{"nested": {"path": "demographic", "in": {"race": ["asian"]}}}]},
-        ]
-    }
-
-    mock_guppy_data(app, mocked_guppy_data)
-
-    res = await client.post(
-        "/survival/",
-        json=filters,
-        headers={"Authorization": f"bearer {TEST_ACCESS_TOKEN}"},
-    )
-    assert res.status_code == 200
-    result_json = res.json()
-    assert len(result_json["results"]) == 2
-    assert (
-        result_json["results"][0]["donors"] == survival_response["results"][0]["donors"]
-    )
-    assert (
-        result_json["results"][1]["donors"] == survival_response["results"][1]["donors"]
-    )
-    assert result_json["overallStats"] == survival_response["overallStats"]
-    assert result_json["progressionFreeSurvival"]["results"][0]["donors"] == [
+expected_progression_free_survival_donors = [
+    [
         {
             "time": 100,
             "id": "a88a74e1-4a3f-44e9",
@@ -394,8 +369,8 @@ async def test_survival_endpoint(app, client):
             "survivalEstimate": pytest.approx(2 / 3),
             "censored": False,
         },
-    ]
-    assert result_json["progressionFreeSurvival"]["results"][1]["donors"] == [
+    ],
+    [
         {
             "time": 110,
             "id": "2856f371-6acd-4f41",
@@ -420,8 +395,107 @@ async def test_survival_endpoint(app, client):
             "survivalEstimate": pytest.approx(2 / 3),
             "censored": True,
         },
-    ]
+    ],
+]
+
+
+def survival_filters(survival_type=None):
+    body = {
+        "filters": [
+            {"and": [{"nested": {"path": "demographic", "in": {"race": ["other"]}}}]},
+            {"and": [{"nested": {"path": "demographic", "in": {"race": ["asian"]}}}]},
+        ]
+    }
+    if survival_type:
+        body["survivalType"] = survival_type
+    return body
+
+
+def assert_overall_survival_response(result_json):
+    assert len(result_json["results"]) == 2
+    assert (
+        result_json["results"][0]["donors"] == survival_response["results"][0]["donors"]
+    )
+    assert (
+        result_json["results"][1]["donors"] == survival_response["results"][1]["donors"]
+    )
+    assert result_json["overallStats"] == survival_response["overallStats"]
+
+
+def assert_progression_free_survival_response(result_json):
+    assert result_json["progressionFreeSurvival"]["results"][0]["donors"] == (
+        expected_progression_free_survival_donors[0]
+    )
+    assert result_json["progressionFreeSurvival"]["results"][1]["donors"] == (
+        expected_progression_free_survival_donors[1]
+    )
     assert "overallStats" in result_json["progressionFreeSurvival"]
+
+
+@pytest.mark.asyncio
+async def test_survival_endpoint(app, client):
+    mock_guppy_data(app, mocked_guppy_data)
+
+    res = await client.post(
+        "/survival/",
+        json=survival_filters(),
+        headers={"Authorization": f"bearer {TEST_ACCESS_TOKEN}"},
+    )
+    assert res.status_code == 200
+    result_json = res.json()
+    assert_overall_survival_response(result_json)
+    assert "progressionFreeSurvival" not in result_json
+
+    for call in app.state.guppy_client.execute.call_args_list:
+        assert "outcomes" not in call.kwargs["query"]
+        assert "outcomes.survival_time_pfs" not in str(call.kwargs["variables"])
+
+
+@pytest.mark.asyncio
+async def test_survival_endpoint_returns_pfs_when_requested(app, client):
+    mock_guppy_data(app, mocked_guppy_data)
+
+    res = await client.post(
+        "/survival/",
+        json=survival_filters("pfs"),
+        headers={"Authorization": f"bearer {TEST_ACCESS_TOKEN}"},
+    )
+    assert res.status_code == 200
+    result_json = res.json()
+    assert "results" not in result_json
+    assert "overallStats" not in result_json
+    assert_progression_free_survival_response(result_json)
+
+    for call in app.state.guppy_client.execute.call_args_list:
+        assert "outcomes" in call.kwargs["query"]
+        assert "demographic" not in call.kwargs["query"]
+        assert "diagnoses" not in call.kwargs["query"]
+        assert "outcomes.survival_time_pfs" in str(call.kwargs["variables"])
+
+
+@pytest.mark.asyncio
+async def test_survival_endpoint_returns_both_when_requested(app, client):
+    mock_guppy_data(app, mocked_guppy_data)
+
+    res = await client.post(
+        "/survival/",
+        json=survival_filters("both"),
+        headers={"Authorization": f"bearer {TEST_ACCESS_TOKEN}"},
+    )
+    assert res.status_code == 200
+    result_json = res.json()
+    assert_overall_survival_response(result_json)
+    assert_progression_free_survival_response(result_json)
+
+
+@pytest.mark.asyncio
+async def test_survival_endpoint_rejects_invalid_survival_type(client):
+    res = await client.post(
+        "/survival/",
+        json=survival_filters("invalid"),
+        headers={"Authorization": f"bearer {TEST_ACCESS_TOKEN}"},
+    )
+    assert res.status_code == 422
 
 
 compare_response = {

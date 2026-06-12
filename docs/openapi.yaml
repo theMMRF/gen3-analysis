@@ -381,6 +381,16 @@ components:
       - field
       title: CompareSurvivalRequest
       type: object
+    CurveMeta:
+      properties:
+        id:
+          description: Unique identifier for this returned curve.
+          title: Id
+          type: integer
+      required:
+      - id
+      title: CurveMeta
+      type: object
     FacetComparisonRequest:
       properties:
         cohort1:
@@ -697,11 +707,18 @@ components:
     PlotRequest:
       properties:
         filters:
+          description: Cohort filters. Each filter returns one survival curve.
           items:
             additionalProperties: true
             type: object
           title: Filters
           type: array
+        survivalType:
+          $ref: '#/components/schemas/SurvivalType'
+          default: overall
+          description: Survival measurement to return. Defaults to 'overall' for backward
+            compatibility. Use 'pfs' for progression-free survival or 'both' to return
+            both measurements.
       required:
       - filters
       title: PlotRequest
@@ -825,6 +842,125 @@ components:
       - log2_uqfpkm_median
       title: SelectedGene
       type: object
+    SurvivalCurve:
+      properties:
+        donors:
+          description: Donor-level points used to render the survival curve.
+          items:
+            $ref: '#/components/schemas/SurvivalDonor'
+          title: Donors
+          type: array
+        meta:
+          $ref: '#/components/schemas/CurveMeta'
+      required:
+      - meta
+      - donors
+      title: SurvivalCurve
+      type: object
+    SurvivalDonor:
+      properties:
+        censored:
+          description: True when this donor was censored at this time point.
+          title: Censored
+          type: boolean
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Case UUID.
+          title: Id
+        project_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Project identifier.
+          title: Project Id
+        submitter_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Case submitter identifier.
+          title: Submitter Id
+        survivalEstimate:
+          description: Kaplan-Meier survival estimate at this donor's time point.
+          title: Survivalestimate
+          type: number
+        time:
+          description: Duration in days for this donor event or censoring.
+          title: Time
+          type: integer
+      required:
+      - time
+      - survivalEstimate
+      - censored
+      title: SurvivalDonor
+      type: object
+    SurvivalMeasureResponse:
+      properties:
+        overallStats:
+          $ref: '#/components/schemas/SurvivalStatistics'
+          description: Statistics calculated across returned curves.
+        results:
+          description: Survival curves for each requested cohort filter.
+          items:
+            $ref: '#/components/schemas/SurvivalCurve'
+          title: Results
+          type: array
+      required:
+      - results
+      - overallStats
+      title: SurvivalMeasureResponse
+      type: object
+    SurvivalPlotResponse:
+      properties:
+        overallStats:
+          anyOf:
+          - $ref: '#/components/schemas/SurvivalStatistics'
+          - type: 'null'
+          description: Overall survival statistics. Returned for survivalType 'overall'
+            and 'both'.
+        progressionFreeSurvival:
+          anyOf:
+          - $ref: '#/components/schemas/SurvivalMeasureResponse'
+          - type: 'null'
+          description: Progression-free survival curves and statistics. Returned for
+            survivalType 'pfs' and 'both'.
+        results:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/SurvivalCurve'
+            type: array
+          - type: 'null'
+          description: Overall survival curves. Returned for survivalType 'overall'
+            and 'both'.
+          title: Results
+      title: SurvivalPlotResponse
+      type: object
+    SurvivalStatistics:
+      properties:
+        degreesFreedom:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: Log-rank test degrees of freedom. Present when comparing at
+            least two curves.
+          title: Degreesfreedom
+        pValue:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: Log-rank test p-value. Present when comparing at least two
+            curves.
+          title: Pvalue
+      title: SurvivalStatistics
+      type: object
+    SurvivalType:
+      enum:
+      - overall
+      - pfs
+      - both
+      title: SurvivalType
+      type: string
     TSVUnits:
       description: "Units for gene expression values in TSV output format.\n\nAttributes:\n\
         \    UQFPKM: Raw FPKM-UQ values (default)\n    MEDIAN_CENTERED_LOG2_UQFPKM:\
@@ -834,6 +970,76 @@ components:
       - median_centered_log2_uqfpkm
       title: TSVUnits
       type: string
+    TermsAcceptanceRequest:
+      properties:
+        terms_version_id:
+          description: The current terms version ID displayed to the user
+          title: Terms Version Id
+          type: integer
+      required:
+      - terms_version_id
+      title: TermsAcceptanceRequest
+      type: object
+    TermsAcceptanceResponse:
+      properties:
+        accepted:
+          title: Accepted
+          type: boolean
+        has_accepted_latest_terms:
+          title: Has Accepted Latest Terms
+          type: boolean
+        terms_version_id:
+          title: Terms Version Id
+          type: integer
+      required:
+      - has_accepted_latest_terms
+      - terms_version_id
+      - accepted
+      title: TermsAcceptanceResponse
+      type: object
+    TermsStatusResponse:
+      properties:
+        current_terms:
+          $ref: '#/components/schemas/TermsVersionResponse'
+        has_accepted_latest_terms:
+          title: Has Accepted Latest Terms
+          type: boolean
+      required:
+      - has_accepted_latest_terms
+      - current_terms
+      title: TermsStatusResponse
+      type: object
+    TermsVersionResponse:
+      properties:
+        content_format:
+          title: Content Format
+          type: string
+        effective_at:
+          format: date-time
+          title: Effective At
+          type: string
+        id:
+          title: Id
+          type: integer
+        terms_content:
+          title: Terms Content
+          type: string
+        terms_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Terms Url
+        version:
+          title: Version
+          type: string
+      required:
+      - id
+      - version
+      - effective_at
+      - terms_content
+      - content_format
+      title: TermsVersionResponse
+      type: object
     TopGeneChartRequest:
       properties:
         cohort_filter:
@@ -2118,8 +2324,10 @@ paths:
       - SSMS Occurrence
   /survival/:
     post:
-      description: Retrieves the survival plot(s) for the given filters. An array
-        of filters is provided and will return an array of survival plot data
+      description: Retrieves survival curve data for the given cohort filters. By
+        default, the endpoint returns only overall survival to preserve the original
+        response shape. Set survivalType to 'pfs' for progression-free survival or
+        'both' to return both measurements.
       operationId: plot_survival__post
       parameters:
       - in: cookie
@@ -2140,7 +2348,8 @@ paths:
         '200':
           content:
             application/json:
-              schema: {}
+              schema:
+                $ref: '#/components/schemas/SurvivalPlotResponse'
           description: Successfully processed the survival plot
         '400':
           description: The request body is missing required fields or has invalid
@@ -2254,3 +2463,58 @@ paths:
       summary: Survival plot comparing two cohorts
       tags:
       - Survival
+  /terms/acceptances:
+    post:
+      operationId: accept_terms_terms_acceptances_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TermsAcceptanceRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TermsAcceptanceResponse'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      security:
+      - HTTPBearer: []
+      summary: Accept the current Terms & Conditions
+      tags:
+      - Terms
+  /terms/current:
+    get:
+      operationId: current_terms_terms_current_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TermsVersionResponse'
+          description: Successful Response
+      summary: Get current Terms & Conditions
+      tags:
+      - Terms
+  /terms/status:
+    get:
+      operationId: terms_status_terms_status_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TermsStatusResponse'
+          description: Successful Response
+      security:
+      - HTTPBearer: []
+      summary: Check whether the authenticated user accepted the current terms
+      tags:
+      - Terms
