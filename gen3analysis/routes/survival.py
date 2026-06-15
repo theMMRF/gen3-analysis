@@ -1,18 +1,17 @@
 import json
-from typing import List, Dict, Optional
+from enum import Enum
+from typing import Dict, List, Optional
 
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi import Cookie
+from fastapi import APIRouter, Cookie, Depends, HTTPException
 from glom import glom
 from lifelines import KaplanMeierFitter
 from lifelines.statistics import multivariate_logrank_test
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette import status
 from starlette.responses import JSONResponse
 
 from gen3analysis.auth import Auth
-from gen3analysis.settings import logger
 from gen3analysis.dependencies.guppy_client import get_guppy_client
 from gen3analysis.filters.gen3GQLFilters import parse_gql_filter
 from gen3analysis.gen3.guppyQuery import GuppyGQLClient
@@ -20,24 +19,142 @@ from gen3analysis.query_builders.cases import cases
 from gen3analysis.query_builders.genomic.survival import (
     genomic_survival_comparison_query,
 )
-from gen3analysis.settings import settings
+from gen3analysis.settings import logger, settings
 
 survival = APIRouter()
 
-Gen3GraphQLQuery = f"""query SurvivalCaseQuery($filter: JSON) {{
-    {settings.case_centric_gql}(accessibility: accessible, offset: 0, first: {settings.MAX_CASES}, filter: $filter) {{
-        submitter_id
-        case_id
-        project {{
+
+class SurvivalType(str, Enum):
+    OVERALL = "overall"
+    PFS = "pfs"
+    BOTH = "both"
+
+
+class StrictRequestModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class CurveMeta(BaseModel):
+    id: int = Field(description="Unique identifier for this returned curve.")
+
+
+class SurvivalDonor(BaseModel):
+    time: int = Field(description="Duration in days for this donor event or censoring.")
+    id: Optional[str] = Field(default=None, description="Case UUID.")
+    submitter_id: Optional[str] = Field(
+        default=None, description="Case submitter identifier."
+    )
+    project_id: Optional[str] = Field(default=None, description="Project identifier.")
+    survivalEstimate: float = Field(
+        description="Kaplan-Meier survival estimate at this donor's time point."
+    )
+    censored: bool = Field(
+        description="True when this donor was censored at this time point."
+    )
+
+
+class SurvivalCurve(BaseModel):
+    meta: CurveMeta
+    donors: List[SurvivalDonor] = Field(
+        description="Donor-level points used to render the survival curve."
+    )
+
+
+class SurvivalStatistics(BaseModel):
+    pValue: Optional[float] = Field(
+        default=None,
+        description="Log-rank test p-value. Present when comparing at least two curves.",
+    )
+    degreesFreedom: Optional[int] = Field(
+        default=None,
+        description="Log-rank test degrees of freedom. Present when comparing at least two curves.",
+    )
+
+
+class SurvivalMeasureResponse(BaseModel):
+    results: List[SurvivalCurve] = Field(
+        description="Survival curves for each requested cohort filter."
+    )
+    overallStats: SurvivalStatistics = Field(
+        description="Statistics calculated across returned curves."
+    )
+
+
+class SurvivalPlotResponse(BaseModel):
+    results: Optional[List[SurvivalCurve]] = Field(
+        default=None,
+        description=(
+            "Survival curves for the selected single measure. For survivalType 'both', "
+            "this contains overall survival curves."
+        ),
+    )
+    overallStats: Optional[SurvivalStatistics] = Field(
+        default=None,
+        description=(
+            "Statistics for the selected single measure. For survivalType 'both', "
+            "this contains overall survival statistics."
+        ),
+    )
+    progressionFreeSurvival: Optional[SurvivalMeasureResponse] = Field(
+        default=None,
+        description=(
+            "Progression-free survival curves and statistics. Returned only for "
+            "survivalType 'both'."
+        ),
+    )
+
+
+def includes_overall_survival(survival_type: SurvivalType) -> bool:
+    return survival_type in {SurvivalType.OVERALL, SurvivalType.BOTH}
+
+
+def includes_progression_free_survival(survival_type: SurvivalType) -> bool:
+    return survival_type in {SurvivalType.PFS, SurvivalType.BOTH}
+
+
+def build_survival_query(survival_type: SurvivalType) -> str:
+    fields = [
+        "submitter_id",
+        "case_id",
+        """
+        project {
             project_id
-        }}
-        demographic {{
+        }
+        """,
+    ]
+
+    if includes_overall_survival(survival_type):
+        fields.extend(
+            [
+                """
+        demographic {
             days_to_death
             vital_status
-        }}
-        diagnoses {{
+        }
+        """,
+                """
+        diagnoses {
             days_to_last_follow_up
-        }}
+        }
+        """,
+            ]
+        )
+
+    if includes_progression_free_survival(survival_type):
+        fields.append(
+            """
+        outcomes {
+            survival_time_pfs
+            censor_pfs
+        }
+        """
+        )
+
+    fields_query = "\n".join(fields)
+
+    return f"""query SurvivalCaseQuery($filter: JSON) {{
+    {settings.case_centric_gql}(accessibility: accessible, offset: 0, first: {settings.MAX_CASES}, filter: $filter) {{
+        {fields_query}
     }}
     {settings.case_centric_agg_gql} {{
         {settings.CASE_CENTRIC_INDEX}(filter: $filter, accessibility: accessible) {{
@@ -48,7 +165,63 @@ Gen3GraphQLQuery = f"""query SurvivalCaseQuery($filter: JSON) {{
 """
 
 
-def transform(data) -> pd.DataFrame:
+def build_survival_data_filter(survival_type: SurvivalType) -> Dict:
+    filters = []
+
+    if includes_overall_survival(survival_type):
+        filters.extend(
+            [
+                {
+                    ">": {"demographic.days_to_death": 0},
+                },
+                {
+                    ">": {"diagnoses.days_to_last_follow_up": 0},
+                },
+            ]
+        )
+
+    if includes_progression_free_survival(survival_type):
+        filters.append(
+            {
+                ">": {"outcomes.survival_time_pfs": 0},
+            }
+        )
+
+    if len(filters) == 1:
+        return filters[0]
+
+    return {"or": filters}
+
+
+def parse_event_flag(value) -> Optional[int]:
+    """Parse a submitted 0/1 or boolean-like event flag."""
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return int(value)
+
+    if isinstance(value, (int, float)):
+        if value in {0, 1}:
+            return int(value)
+        return None
+
+    if isinstance(value, str):
+        normalized_value = value.strip().lower()
+        if normalized_value in {"1", "true", "yes", "y"}:
+            return 1
+        if normalized_value in {"0", "false", "no", "n"}:
+            return 0
+        try:
+            numeric_value = float(normalized_value)
+        except ValueError:
+            return None
+        return parse_event_flag(numeric_value)
+
+    return None
+
+
+def transform_overall_survival(data) -> pd.DataFrame:
     """Transform the Gen3 data into a pandas DataFrame suitable for lifelines."""
     records = []
 
@@ -85,25 +258,50 @@ def transform(data) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
-async def get_curve(filters, gen3_graphql_client, access_token=None):
+def transform_progression_free_survival(data) -> pd.DataFrame:
+    """Transform PFS outcomes into a pandas DataFrame suitable for lifelines."""
+    records = []
+
+    for case in data:
+        outcomes = case.get("outcomes") or []
+        if isinstance(outcomes, dict):
+            outcomes = [outcomes]
+
+        for outcome in outcomes:
+            duration = outcome.get("survival_time_pfs")
+            event = parse_event_flag(outcome.get("censor_pfs"))
+            if duration is None or event is None:
+                continue
+
+            records.append(
+                {
+                    "duration": duration,
+                    "event": event,
+                    "case_id": case.get("case_id"),
+                    "submitter_id": case.get("submitter_id"),
+                    "project_id": glom(case, "project.project_id", default="---"),
+                }
+            )
+            break
+
+    return pd.DataFrame(records)
+
+
+async def get_curve(
+    filters,
+    gen3_graphql_client,
+    access_token=None,
+    survival_type: SurvivalType = SurvivalType.OVERALL,
+):
     query_filter = {
         "and": [
             filters,
-            {
-                "or": [
-                    {
-                        ">": {"demographic.days_to_death": 0},
-                    },
-                    {
-                        ">": {"diagnoses.days_to_last_follow_up": 0},
-                    },
-                ]
-            },
+            build_survival_data_filter(survival_type),
         ]
     }
     data = await gen3_graphql_client.execute(
         access_token=access_token,
-        query=Gen3GraphQLQuery,
+        query=build_survival_query(survival_type),
         variables={"filter": query_filter},
         retry_count=1,
     )
@@ -117,8 +315,23 @@ async def get_curve(filters, gen3_graphql_client, access_token=None):
         == 0
     ):
         return None
-    data_root = glom(data, f"data.{settings.case_centric_gql}", default={})
-    df = transform(data_root)
+    data_root = glom(data, f"data.{settings.case_centric_gql}", default=[])
+
+    curves = {}
+    if includes_overall_survival(survival_type):
+        curves["overall_survival"] = calculate_curve(
+            transform_overall_survival(data_root)
+        )
+
+    if includes_progression_free_survival(survival_type):
+        curves["progression_free_survival"] = calculate_curve(
+            transform_progression_free_survival(data_root)
+        )
+
+    return curves
+
+
+def calculate_curve(df: pd.DataFrame):
     if df.empty:
         return None
 
@@ -149,7 +362,7 @@ async def get_curve(filters, gen3_graphql_client, access_token=None):
                     "id": row["case_id"],
                     "submitter_id": row["submitter_id"],
                     "project_id": row["project_id"],
-                    "event_type": "death" if row["event"] == 1 else "censored",
+                    "event_observed": row["event"] == 1,
                 }
                 for _, row in group.iterrows()
             ]
@@ -173,8 +386,8 @@ async def get_curve(filters, gen3_graphql_client, access_token=None):
                 # For donors with events at this time point, use the survival probability
                 # from BEFORE the event (i.e., the previous time point or current if censored)
 
-                if donor["event_type"] == "death":
-                    # For death events, use survival probability from the previous time point
+                if donor["event_observed"]:
+                    # For observed events, use survival probability from the previous time point
                     if i > 0:
                         prev_time_point = timeline_sorted[i - 1]
                         donor_survival_prob = survival_df.loc[prev_time_point].iloc[0]
@@ -192,9 +405,7 @@ async def get_curve(filters, gen3_graphql_client, access_token=None):
                         "submitter_id": donor["submitter_id"],
                         "project_id": donor["project_id"],
                         "survivalEstimate": float(donor_survival_prob),
-                        "censored": (
-                            True if donor["event_type"] == "censored" else False
-                        ),
+                        "censored": not donor["event_observed"],
                     }
                 )
 
@@ -237,16 +448,42 @@ def calculate_survival_statistics(non_empty_curves: List[Dict]) -> Dict:
     return statistics
 
 
+def format_survival_measure_response(curves: List[Dict]) -> Dict:
+    return {
+        "results": [
+            {"meta": curve["meta"], "donors": curve["donors"]} for curve in curves
+        ],
+        "overallStats": calculate_survival_statistics(curves),
+    }
+
+
 # Define a Pydantic model for the request body
-class PlotRequest(BaseModel):
-    filters: List[Dict]
+class PlotRequest(StrictRequestModel):
+    filters: List[Dict] = Field(
+        description="Cohort filters. Each filter returns one survival curve."
+    )
+    survivalType: SurvivalType = Field(
+        default=SurvivalType.OVERALL,
+        description=(
+            "Survival measurement to return. Defaults to 'overall' for backward "
+            "compatibility. Use 'pfs' for progression-free survival or 'both' to "
+            "return both measurements."
+        ),
+    )
 
 
 @survival.post(
     path="/",
     dependencies=[Depends(get_guppy_client)],
     status_code=status.HTTP_200_OK,
-    description="Retrieves the survival plot(s) for the given filters. An array of filters is provided and will return an array of survival plot data",
+    response_model=SurvivalPlotResponse,
+    response_model_exclude_none=True,
+    description=(
+        "Retrieves survival curve data for the given cohort filters. By default, "
+        "the endpoint returns only overall survival to preserve the original "
+        "response shape. Set survivalType to 'pfs' for progression-free survival "
+        "or 'both' to return both measurements."
+    ),
     summary="Survival plots for cohort represented as filters",
     responses={
         status.HTTP_200_OK: {"description": "Successfully processed the survival plot"},
@@ -269,33 +506,51 @@ async def plot(
     access_token: Optional[str] = Cookie(None),
     gen3_graphql_client: GuppyGQLClient = Depends(get_guppy_client),
     auth: Auth = Depends(Auth),
-) -> JSONResponse:
+) -> Dict:
     filters = body.filters
+    survival_type = body.survivalType
 
     if filters is None or len(filters) == 0:
         raise HTTPException(status_code=400, detail="Must have at least one filter")
 
     try:
-        non_empty_curves = []
+        overall_survival_curves = []
+        progression_free_survival_curves = []
         for f in filters:
-            curve = await get_curve(f, gen3_graphql_client, access_token=access_token)
-            if curve:
-                non_empty_curves.append(curve)
+            curves = await get_curve(
+                f,
+                gen3_graphql_client,
+                access_token=access_token,
+                survival_type=survival_type,
+            )
+            if not curves:
+                continue
 
-        statistics = calculate_survival_statistics(non_empty_curves)
+            if includes_overall_survival(survival_type):
+                overall_survival_curve = curves.get("overall_survival")
+                if overall_survival_curve:
+                    overall_survival_curves.append(overall_survival_curve)
 
-        results = [
-            {"meta": curve["meta"], "donors": curve["donors"]}
-            for curve in non_empty_curves
-        ]
+            if includes_progression_free_survival(survival_type):
+                progression_free_survival_curve = curves.get(
+                    "progression_free_survival"
+                )
+                if progression_free_survival_curve:
+                    progression_free_survival_curves.append(
+                        progression_free_survival_curve
+                    )
 
-        return JSONResponse(
-            status_code=status.HTTP_200_OK,
-            content={
-                "results": results,
-                "overallStats": statistics,
-            },
-        )
+        if survival_type == SurvivalType.PFS:
+            return format_survival_measure_response(progression_free_survival_curves)
+
+        content = format_survival_measure_response(overall_survival_curves)
+
+        if survival_type == SurvivalType.BOTH:
+            content["progressionFreeSurvival"] = format_survival_measure_response(
+                progression_free_survival_curves
+            )
+
+        return content
 
     except ValueError as e:
         logger.error(f"Error while processing survival plot: {e}")
@@ -306,7 +561,7 @@ async def plot(
 
 
 # Define a Pydantic model for the request body
-class CompareSurvivalRequest(BaseModel):
+class CompareSurvivalRequest(StrictRequestModel):
     filters: List[Dict]
     doc_type: Optional[str] = Field(
         default=settings.case_centric_gql, description="set the index for case queries"
@@ -316,6 +571,14 @@ class CompareSurvivalRequest(BaseModel):
     mode: Optional[str] = Field(
         default="intersection",
         description="set the mode for the plot. modes are: intersection, compare, s0_minus_s1, s1_minus_s0",
+    )
+    survivalType: SurvivalType = Field(
+        default=SurvivalType.OVERALL,
+        description=(
+            "Survival measurement to return. Defaults to 'overall' for backward "
+            "compatibility. Use 'pfs' for progression-free survival or 'both' to "
+            "return both measurements."
+        ),
     )
 
 
@@ -352,6 +615,7 @@ async def compare(
     limit = request.limit
     doc_type = request.doc_type
     mode = request.mode
+    survival_type = request.survivalType
 
     if len(filters) != 2:
         raise HTTPException(
@@ -402,7 +666,7 @@ async def compare(
         filter_0 = {"in": {field: ids_0}}
         filter_1 = {"in": {field: ids_1}}
         return await plot(
-            PlotRequest(filters=[filter_0, filter_1]),
+            PlotRequest(filters=[filter_0, filter_1], survivalType=survival_type),
             access_token,
             gen3_graphql_client,
         )
@@ -412,7 +676,7 @@ async def compare(
         filter_0 = {"in": {field: diff}}
         filter_1 = {"in": {field: ids_1}}
         return await plot(
-            PlotRequest(filters=[filter_0, filter_1]),
+            PlotRequest(filters=[filter_0, filter_1], survivalType=survival_type),
             access_token,
             gen3_graphql_client,
         )
@@ -422,7 +686,7 @@ async def compare(
         filter_0 = {"in": {field: ids_0}}
         filter_1 = {"in": {field: diff}}
         return await plot(
-            PlotRequest(filters=[filter_0, filter_1]),
+            PlotRequest(filters=[filter_0, filter_1], survivalType=survival_type),
             access_token,
             gen3_graphql_client,
         )
@@ -439,19 +703,27 @@ async def compare(
     filter_1 = {"in": {field: item_id_1_minus_intersection}}
 
     return await plot(
-        PlotRequest(filters=[filter_0, filter_1]),
+        PlotRequest(filters=[filter_0, filter_1], survivalType=survival_type),
         access_token,
         gen3_graphql_client,
     )
 
 
-class GenomicSurvivalRequest(BaseModel):
+class GenomicSurvivalRequest(StrictRequestModel):
     case_filter: Dict
     filter: Dict
     symbol: str = Field(description="symbol to compare")
     limit: int = settings.MAX_CASES
     type: Optional[str] = Field(
         default="gene", description="set the type of plot gene or ssm"
+    )
+    survivalType: SurvivalType = Field(
+        default=SurvivalType.OVERALL,
+        description=(
+            "Survival measurement to return. Defaults to 'overall' for backward "
+            "compatibility. Use 'pfs' for progression-free survival or 'both' to "
+            "return both measurements."
+        ),
     )
 
 
@@ -488,6 +760,7 @@ async def compare_genomic(
     limit = request.limit
     symbol = request.symbol
     plot_type = request.type
+    survival_type = request.survivalType
 
     # get all cases
     case_ids = await cases.get_item_ids(
@@ -509,6 +782,7 @@ async def compare_genomic(
         genomic_filter=genomic_filter,
         genomic_id=symbol,
         mode=plot_type,
+        survival_type=survival_type,
     )
     with_cases = {"in": {"case_id": with_gene_query}}
     without_cases = {"in": {"case_id": without_gene_query}}
@@ -517,7 +791,7 @@ async def compare_genomic(
     #  get the information needed for the survival plot without
     #  executing another query
     return await plot(
-        PlotRequest(filters=[without_cases, with_cases]),
+        PlotRequest(filters=[without_cases, with_cases], survivalType=survival_type),
         access_token,
         gen3_graphql_client,
     )
