@@ -376,6 +376,12 @@ components:
           description: 'set the mode for the plot. modes are: intersection, compare,
             s0_minus_s1, s1_minus_s0'
           title: Mode
+        survivalType:
+          $ref: '#/components/schemas/SurvivalType'
+          default: overall
+          description: Survival measurement to return. Defaults to 'overall' for backward
+            compatibility. Use 'pfs' for progression-free survival or 'both' to return
+            both measurements.
       required:
       - filters
       - field
@@ -649,6 +655,12 @@ components:
           description: symbol to compare
           title: Symbol
           type: string
+        survivalType:
+          $ref: '#/components/schemas/SurvivalType'
+          default: overall
+          description: Survival measurement to return. Defaults to 'overall' for backward
+            compatibility. Use 'pfs' for progression-free survival or 'both' to return
+            both measurements.
         type:
           anyOf:
           - type: string
@@ -917,22 +929,22 @@ components:
           anyOf:
           - $ref: '#/components/schemas/SurvivalStatistics'
           - type: 'null'
-          description: Overall survival statistics. Returned for survivalType 'overall'
-            and 'both'.
+          description: Statistics for the selected single measure. For survivalType
+            'both', this contains overall survival statistics.
         progressionFreeSurvival:
           anyOf:
           - $ref: '#/components/schemas/SurvivalMeasureResponse'
           - type: 'null'
-          description: Progression-free survival curves and statistics. Returned for
-            survivalType 'pfs' and 'both'.
+          description: Progression-free survival curves and statistics. Returned only
+            for survivalType 'both'.
         results:
           anyOf:
           - items:
               $ref: '#/components/schemas/SurvivalCurve'
             type: array
           - type: 'null'
-          description: Overall survival curves. Returned for survivalType 'overall'
-            and 'both'.
+          description: Survival curves for the selected single measure. For survivalType
+            'both', this contains overall survival curves.
           title: Results
       title: SurvivalPlotResponse
       type: object
@@ -2327,7 +2339,8 @@ paths:
       description: Retrieves survival curve data for the given cohort filters. By
         default, the endpoint returns only overall survival to preserve the original
         response shape. Set survivalType to 'pfs' for progression-free survival or
-        'both' to return both measurements.
+        'both' to return both measurements. Single-measure responses use top-level
+        results and overallStats.
       operationId: plot_survival__post
       parameters:
       - in: cookie

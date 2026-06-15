@@ -1,10 +1,9 @@
 import json
 from enum import Enum
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
 
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi import Cookie
+from fastapi import APIRouter, Cookie, Depends, HTTPException
 from glom import glom
 from lifelines import KaplanMeierFitter
 from lifelines.statistics import multivariate_logrank_test
@@ -13,7 +12,6 @@ from starlette import status
 from starlette.responses import JSONResponse
 
 from gen3analysis.auth import Auth
-from gen3analysis.settings import logger
 from gen3analysis.dependencies.guppy_client import get_guppy_client
 from gen3analysis.filters.gen3GQLFilters import parse_gql_filter
 from gen3analysis.gen3.guppyQuery import GuppyGQLClient
@@ -21,7 +19,7 @@ from gen3analysis.query_builders.cases import cases
 from gen3analysis.query_builders.genomic.survival import (
     genomic_survival_comparison_query,
 )
-from gen3analysis.settings import settings
+from gen3analysis.settings import logger, settings
 
 survival = APIRouter()
 
@@ -81,15 +79,24 @@ class SurvivalMeasureResponse(BaseModel):
 class SurvivalPlotResponse(BaseModel):
     results: Optional[List[SurvivalCurve]] = Field(
         default=None,
-        description="Overall survival curves. Returned for survivalType 'overall' and 'both'.",
+        description=(
+            "Survival curves for the selected single measure. For survivalType 'both', "
+            "this contains overall survival curves."
+        ),
     )
     overallStats: Optional[SurvivalStatistics] = Field(
         default=None,
-        description="Overall survival statistics. Returned for survivalType 'overall' and 'both'.",
+        description=(
+            "Statistics for the selected single measure. For survivalType 'both', "
+            "this contains overall survival statistics."
+        ),
     )
     progressionFreeSurvival: Optional[SurvivalMeasureResponse] = Field(
         default=None,
-        description="Progression-free survival curves and statistics. Returned for survivalType 'pfs' and 'both'.",
+        description=(
+            "Progression-free survival curves and statistics. Returned only for "
+            "survivalType 'both'."
+        ),
     )
 
 
@@ -139,9 +146,11 @@ def build_survival_query(survival_type: SurvivalType) -> str:
         """
         )
 
+    fields_query = "\n".join(fields)
+
     return f"""query SurvivalCaseQuery($filter: JSON) {{
     {settings.case_centric_gql}(accessibility: accessible, offset: 0, first: {settings.MAX_CASES}, filter: $filter) {{
-        {"".join(fields)}
+        {fields_query}
     }}
     {settings.case_centric_agg_gql} {{
         {settings.CASE_CENTRIC_INDEX}(filter: $filter, accessibility: accessible) {{
@@ -435,6 +444,15 @@ def calculate_survival_statistics(non_empty_curves: List[Dict]) -> Dict:
     return statistics
 
 
+def format_survival_measure_response(curves: List[Dict]) -> Dict:
+    return {
+        "results": [
+            {"meta": curve["meta"], "donors": curve["donors"]} for curve in curves
+        ],
+        "overallStats": calculate_survival_statistics(curves),
+    }
+
+
 # Define a Pydantic model for the request body
 class PlotRequest(BaseModel):
     filters: List[Dict] = Field(
@@ -518,29 +536,15 @@ async def plot(
                         progression_free_survival_curve
                     )
 
-        content = {}
+        if survival_type == SurvivalType.PFS:
+            return format_survival_measure_response(progression_free_survival_curves)
 
-        if includes_overall_survival(survival_type):
-            content["results"] = [
-                {"meta": curve["meta"], "donors": curve["donors"]}
-                for curve in overall_survival_curves
-            ]
-            content["overallStats"] = calculate_survival_statistics(
-                overall_survival_curves
-            )
+        content = format_survival_measure_response(overall_survival_curves)
 
-        if includes_progression_free_survival(survival_type):
-            progression_free_survival_results = [
-                {"meta": curve["meta"], "donors": curve["donors"]}
-                for curve in progression_free_survival_curves
-            ]
-            progression_free_survival_statistics = calculate_survival_statistics(
+        if survival_type == SurvivalType.BOTH:
+            content["progressionFreeSurvival"] = format_survival_measure_response(
                 progression_free_survival_curves
             )
-            content["progressionFreeSurvival"] = {
-                "results": progression_free_survival_results,
-                "overallStats": progression_free_survival_statistics,
-            }
 
         return content
 
@@ -563,6 +567,14 @@ class CompareSurvivalRequest(BaseModel):
     mode: Optional[str] = Field(
         default="intersection",
         description="set the mode for the plot. modes are: intersection, compare, s0_minus_s1, s1_minus_s0",
+    )
+    survivalType: SurvivalType = Field(
+        default=SurvivalType.OVERALL,
+        description=(
+            "Survival measurement to return. Defaults to 'overall' for backward "
+            "compatibility. Use 'pfs' for progression-free survival or 'both' to "
+            "return both measurements."
+        ),
     )
 
 
@@ -599,6 +611,7 @@ async def compare(
     limit = request.limit
     doc_type = request.doc_type
     mode = request.mode
+    survival_type = request.survivalType
 
     if len(filters) != 2:
         raise HTTPException(
@@ -649,7 +662,7 @@ async def compare(
         filter_0 = {"in": {field: ids_0}}
         filter_1 = {"in": {field: ids_1}}
         return await plot(
-            PlotRequest(filters=[filter_0, filter_1]),
+            PlotRequest(filters=[filter_0, filter_1], survivalType=survival_type),
             access_token,
             gen3_graphql_client,
         )
@@ -659,7 +672,7 @@ async def compare(
         filter_0 = {"in": {field: diff}}
         filter_1 = {"in": {field: ids_1}}
         return await plot(
-            PlotRequest(filters=[filter_0, filter_1]),
+            PlotRequest(filters=[filter_0, filter_1], survivalType=survival_type),
             access_token,
             gen3_graphql_client,
         )
@@ -669,7 +682,7 @@ async def compare(
         filter_0 = {"in": {field: ids_0}}
         filter_1 = {"in": {field: diff}}
         return await plot(
-            PlotRequest(filters=[filter_0, filter_1]),
+            PlotRequest(filters=[filter_0, filter_1], survivalType=survival_type),
             access_token,
             gen3_graphql_client,
         )
@@ -686,7 +699,7 @@ async def compare(
     filter_1 = {"in": {field: item_id_1_minus_intersection}}
 
     return await plot(
-        PlotRequest(filters=[filter_0, filter_1]),
+        PlotRequest(filters=[filter_0, filter_1], survivalType=survival_type),
         access_token,
         gen3_graphql_client,
     )
@@ -699,6 +712,14 @@ class GenomicSurvivalRequest(BaseModel):
     limit: int = settings.MAX_CASES
     type: Optional[str] = Field(
         default="gene", description="set the type of plot gene or ssm"
+    )
+    survivalType: SurvivalType = Field(
+        default=SurvivalType.OVERALL,
+        description=(
+            "Survival measurement to return. Defaults to 'overall' for backward "
+            "compatibility. Use 'pfs' for progression-free survival or 'both' to "
+            "return both measurements."
+        ),
     )
 
 
@@ -735,6 +756,7 @@ async def compare_genomic(
     limit = request.limit
     symbol = request.symbol
     plot_type = request.type
+    survival_type = request.survivalType
 
     # get all cases
     case_ids = await cases.get_item_ids(
@@ -756,6 +778,7 @@ async def compare_genomic(
         genomic_filter=genomic_filter,
         genomic_id=symbol,
         mode=plot_type,
+        survival_type=survival_type,
     )
     with_cases = {"in": {"case_id": with_gene_query}}
     without_cases = {"in": {"case_id": without_gene_query}}
@@ -764,7 +787,7 @@ async def compare_genomic(
     #  get the information needed for the survival plot without
     #  executing another query
     return await plot(
-        PlotRequest(filters=[without_cases, with_cases]),
+        PlotRequest(filters=[without_cases, with_cases], survivalType=survival_type),
         access_token,
         gen3_graphql_client,
     )
