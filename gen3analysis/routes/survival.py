@@ -7,7 +7,7 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException
 from glom import glom
 from lifelines import KaplanMeierFitter
 from lifelines.statistics import multivariate_logrank_test
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette import status
 from starlette.responses import JSONResponse
 
@@ -28,6 +28,10 @@ class SurvivalType(str, Enum):
     OVERALL = "overall"
     PFS = "pfs"
     BOTH = "both"
+
+
+class StrictRequestModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
 class CurveMeta(BaseModel):
@@ -454,7 +458,7 @@ def format_survival_measure_response(curves: List[Dict]) -> Dict:
 
 
 # Define a Pydantic model for the request body
-class PlotRequest(BaseModel):
+class PlotRequest(StrictRequestModel):
     filters: List[Dict] = Field(
         description="Cohort filters. Each filter returns one survival curve."
     )
@@ -557,7 +561,7 @@ async def plot(
 
 
 # Define a Pydantic model for the request body
-class CompareSurvivalRequest(BaseModel):
+class CompareSurvivalRequest(StrictRequestModel):
     filters: List[Dict]
     doc_type: Optional[str] = Field(
         default=settings.case_centric_gql, description="set the index for case queries"
@@ -705,7 +709,7 @@ async def compare(
     )
 
 
-class GenomicSurvivalRequest(BaseModel):
+class GenomicSurvivalRequest(StrictRequestModel):
     case_filter: Dict
     filter: Dict
     symbol: str = Field(description="symbol to compare")

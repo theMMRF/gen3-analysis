@@ -467,6 +467,23 @@ def test_survival_comparison_requests_default_to_overall():
     assert genomic_request.survivalType == SurvivalType.OVERALL
 
 
+def test_survival_request_rejects_unknown_fields():
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        CompareSurvivalRequest(
+            filters=[{}, {}],
+            field="case_id",
+            survialType="pfs",
+        )
+
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        GenomicSurvivalRequest(
+            case_filter={},
+            filter={},
+            symbol="TP53",
+            survialType="pfs",
+        )
+
+
 def test_genomic_survival_query_gates_eligibility_by_survival_type():
     overall_query = str(
         build_gene_survival_query(
@@ -557,6 +574,27 @@ async def test_survival_endpoint_rejects_invalid_survival_type(client):
         headers={"Authorization": f"bearer {TEST_ACCESS_TOKEN}"},
     )
     assert res.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_survival_endpoint_rejects_misspelled_survival_type(client):
+    res = await client.post(
+        "/survival/",
+        json={
+            "survialType": "pfs",
+            "filters": [
+                {
+                    "and": [
+                        {"nested": {"path": "demographic", "in": {"race": ["other"]}}}
+                    ]
+                },
+            ],
+        },
+        headers={"Authorization": f"bearer {TEST_ACCESS_TOKEN}"},
+    )
+    assert res.status_code == 422
+    assert res.json()["detail"][0]["loc"] == ["body", "survialType"]
+    assert res.json()["detail"][0]["type"] == "extra_forbidden"
 
 
 compare_response = {

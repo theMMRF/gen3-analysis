@@ -347,6 +347,7 @@ components:
       title: CohortQueryRequest
       type: object
     CompareSurvivalRequest:
+      additionalProperties: false
       properties:
         doc_type:
           anyOf:
@@ -638,6 +639,7 @@ components:
       title: GeneType
       type: string
     GenomicSurvivalRequest:
+      additionalProperties: false
       properties:
         case_filter:
           additionalProperties: true
@@ -717,6 +719,7 @@ components:
       title: OutputFormat
       type: string
     PlotRequest:
+      additionalProperties: false
       properties:
         filters:
           description: Cohort filters. Each filter returns one survival curve.
