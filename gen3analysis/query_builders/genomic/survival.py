@@ -101,6 +101,17 @@ def build_gene_survival_query(
         ignore_unmapped=True,
         query=Q("bool", must=[Q("exists", field="gene.ssm.ssm_id")]),
     )
+    gene_has_cnv = Q(
+        "nested",
+        path="gene.cnv",
+        ignore_unmapped=True,
+        query=Q("bool", must=[Q("exists", field="gene.cnv.cnv_id")]),
+    )
+    gene_has_mutation = Q(
+        "bool",
+        should=[gene_has_ssm, gene_has_cnv],
+        minimum_should_match=1,
+    )
     if mode == "ssm":
         symbol_query = Q(
             "nested",
@@ -111,6 +122,7 @@ def build_gene_survival_query(
                 must=[Q("term", gene__ssm__ssm_id={"value": genomic_id, "boost": 0})],
             ),
         )
+        gene_has_mutation = gene_has_ssm
 
     if not exclude_gene:
         genomic_es_filters.append(
@@ -120,7 +132,7 @@ def build_gene_survival_query(
                 ignore_unmapped=True,
                 query=Q(
                     "bool",
-                    must=[symbol_query, gene_has_ssm],
+                    must=[symbol_query, gene_has_mutation],
                 ),
             )
         )
@@ -144,7 +156,9 @@ def build_gene_survival_query(
         if mode == "ssm":
             q.must.append(Q("terms", available_variation_data=["ssm"], boost=0))
         else:
-            q.must.append(Q("terms", available_variation_data=["ssm", "cnv"], boost=0))
+            q.must.append(
+                Q("terms", available_variation_data=["ssm", "cnv"], boost=0)
+            )
         q.must_not = [
             Q(
                 "nested",
@@ -152,7 +166,7 @@ def build_gene_survival_query(
                 ignore_unmapped=True,
                 query=Q(
                     "bool",
-                    must=[symbol_query, gene_has_ssm],
+                    must=[symbol_query, gene_has_mutation],
                 ),
             )
         ]

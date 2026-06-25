@@ -509,6 +509,34 @@ def test_genomic_survival_query_gates_eligibility_by_survival_type():
     assert "outcomes" in both_query
 
 
+def test_gene_survival_query_matches_ssm_or_cnv_gene_mutations():
+    with_gene_query = str(
+        build_gene_survival_query([], "KRAS", False, ["case-1"]).to_dict()
+    )
+    without_gene_query = str(
+        build_gene_survival_query([], "KRAS", True, ["case-1"]).to_dict()
+    )
+
+    assert "gene.ssm.ssm_id" in with_gene_query
+    assert "gene.cnv.cnv_id" in with_gene_query
+    assert "'minimum_should_match': 1" in with_gene_query
+
+    assert "gene.ssm.ssm_id" in without_gene_query
+    assert "gene.cnv.cnv_id" in without_gene_query
+    assert "'minimum_should_match': 1" in without_gene_query
+
+
+def test_ssm_survival_query_does_not_match_cnv_only_gene_mutations():
+    query = str(
+        build_gene_survival_query(
+            [], "ssm-1", False, ["case-1"], mode="ssm"
+        ).to_dict()
+    )
+
+    assert "gene.ssm.ssm_id" in query
+    assert "gene.cnv.cnv_id" not in query
+
+
 @pytest.mark.asyncio
 async def test_survival_endpoint(app, client):
     mock_guppy_data(app, mocked_guppy_data)
