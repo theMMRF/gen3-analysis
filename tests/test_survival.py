@@ -467,6 +467,17 @@ def test_survival_comparison_requests_default_to_overall():
     assert genomic_request.survivalType == SurvivalType.OVERALL
 
 
+def test_survival_comparison_request_accepts_index_alias():
+    compare_request = CompareSurvivalRequest(
+        filters=[{}, {}],
+        index="CaseCentric_case_centric",
+        field="case_id",
+    )
+
+    assert compare_request.doc_type == "CaseCentric_case_centric"
+    assert compare_request.index == "CaseCentric_case_centric"
+
+
 def test_survival_request_rejects_unknown_fields():
     with pytest.raises(ValueError, match="Extra inputs are not permitted"):
         CompareSurvivalRequest(
@@ -1012,6 +1023,50 @@ async def test_survival_compare_endpoint(app, client):
         json=parameters,
         headers={"Authorization": f"bearer {TEST_ACCESS_TOKEN}"},
     )
+    assert res.status_code == 200
+    result_json = res.json()
+    assert len(result_json["results"]) == 2
+    assert (
+        result_json["results"][0]["donors"] == compare_response["results"][0]["donors"]
+    )
+    assert (
+        result_json["results"][1]["donors"] == compare_response["results"][1]["donors"]
+    )
+    assert result_json["overallStats"] == compare_response["overallStats"]
+
+
+@pytest.mark.asyncio
+async def test_survival_compare_endpoint_accepts_index_alias(app, client):
+    parameters = {
+        "filters": [
+            {"nested": {"path": "demographic", "in": {"gender": ["male"]}}},
+            {"nested": {"path": "demographic", "in": {"race": ["white"]}}},
+        ],
+        "index": "CaseCentric_case_centric",
+        "field": "case_id",
+    }
+    compare_data = [
+        {
+            "data": {
+                "CaseCentric_case_centric": cohort_a["data"]["case"],
+            }
+        },
+        {
+            "data": {
+                "CaseCentric_case_centric": cohort_b["data"]["case"],
+            }
+        },
+        result_cohort_a,
+        result_cohort_b,
+    ]
+    mock_guppy_data(app, compare_data)
+
+    res = await client.post(
+        "/survival/compare",
+        json=parameters,
+        headers={"Authorization": f"bearer {TEST_ACCESS_TOKEN}"},
+    )
+
     assert res.status_code == 200
     result_json = res.json()
     assert len(result_json["results"]) == 2

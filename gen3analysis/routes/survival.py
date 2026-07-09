@@ -7,7 +7,7 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException
 from glom import glom
 from lifelines import KaplanMeierFitter
 from lifelines.statistics import multivariate_logrank_test
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette import status
 from starlette.responses import JSONResponse
 
@@ -566,6 +566,13 @@ class CompareSurvivalRequest(StrictRequestModel):
     doc_type: Optional[str] = Field(
         default=settings.case_centric_gql, description="set the index for case queries"
     )
+    index: Optional[str] = Field(
+        default=None,
+        description=(
+            "Deprecated alias for doc_type. Accepted for compatibility with older "
+            "cohort comparison clients."
+        ),
+    )
     field: str
     limit: int = settings.MAX_CASES
     mode: Optional[str] = Field(
@@ -580,6 +587,17 @@ class CompareSurvivalRequest(StrictRequestModel):
             "return both measurements."
         ),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_doc_type(cls, data):
+        if (
+            isinstance(data, dict)
+            and data.get("doc_type") is None
+            and data.get("index") is not None
+        ):
+            return {**data, "doc_type": data["index"]}
+        return data
 
 
 @survival.post(

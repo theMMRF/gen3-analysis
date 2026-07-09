@@ -365,6 +365,13 @@ components:
             type: object
           title: Filters
           type: array
+        index:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Deprecated alias for doc_type. Accepted for compatibility with
+            older cohort comparison clients.
+          title: Index
         limit:
           default: 10000
           title: Limit
@@ -653,16 +660,16 @@ components:
           default: 10000
           title: Limit
           type: integer
-        symbol:
-          description: symbol to compare
-          title: Symbol
-          type: string
         survivalType:
           $ref: '#/components/schemas/SurvivalType'
           default: overall
           description: Survival measurement to return. Defaults to 'overall' for backward
             compatibility. Use 'pfs' for progression-free survival or 'both' to return
             both measurements.
+        symbol:
+          description: symbol to compare
+          title: Symbol
+          type: string
         type:
           anyOf:
           - type: string
@@ -2342,8 +2349,7 @@ paths:
       description: Retrieves survival curve data for the given cohort filters. By
         default, the endpoint returns only overall survival to preserve the original
         response shape. Set survivalType to 'pfs' for progression-free survival or
-        'both' to return both measurements. Single-measure responses use top-level
-        results and overallStats.
+        'both' to return both measurements.
       operationId: plot_survival__post
       parameters:
       - in: cookie
