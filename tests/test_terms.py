@@ -87,6 +87,9 @@ class FakeAuth:
     async def get_token_claims(self):
         return self.claims
 
+    async def get_access_token(self):
+        return None
+
 
 @pytest.fixture(autouse=True)
 def clear_dependency_overrides(app):

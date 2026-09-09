@@ -1,9 +1,6 @@
-import traceback
-
 from authutils.token.fastapi import access_token
 from fastapi import HTTPException, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from gen3.auth import Gen3Auth
 from gen3authz.client.arborist.errors import ArboristError
 from starlette.requests import Request
 from starlette.status import (
@@ -11,27 +8,13 @@ from starlette.status import (
     HTTP_403_FORBIDDEN,
 )
 
-from gen3analysis.settings import settings, logger
+from gen3analysis.settings import logger
+from gen3analysis.metadata_auth import caller_token, request_access_token
 
 # auto_error=False prevents FastAPI from raising a 403 when the request
 # is missing an Authorization header. Instead, we want to return a 401
 # to signify that we did not receive valid credentials
 bearer = HTTPBearer(auto_error=False)
-
-
-class Gen3SdkAuth:
-    def __init__(self, endpoint: str):
-        try:
-            self.auth = Gen3Auth(endpoint=endpoint)
-        except:
-            traceback.print_exc()
-            logger.warning(
-                f"Unable to initialize Gen3Auth instance. Authorization checks will not work. Endpoint was: '{endpoint}'. Proceeding anyway..."
-            )
-            self.auth = None
-
-    async def get_access_token(self) -> str:
-        return self.auth.get_access_token()
 
 
 class Auth:
@@ -51,20 +34,7 @@ class Auth:
         #     )
 
     async def get_access_token(self) -> str:
-        # if config.MOCK_AUTH:
-        #     return "123"
-
-        token = (
-            self.bearer_token.credentials
-            if self.bearer_token and hasattr(self.bearer_token, "credentials")
-            else None
-        )
-        if not token:
-            token = self.api_request.cookies.get("access_token")
-        if not token and settings.DEPLOYMENT_TYPE == "dev":
-            token = await self.app.state.gen3_sdk_auth.get_access_token()
-
-        return token
+        return request_access_token.get() or caller_token(self.api_request)
 
     async def get_token_claims(self) -> dict:
         # if config.MOCK_AUTH:
@@ -110,7 +80,7 @@ class Auth:
         # if config.MOCK_AUTH:
         #     return True
 
-        token = self.get_access_token()
+        token = await self.get_access_token()
         try:
             authorized = await self.arborist_client.auth_request(
                 token, "gen3-analysis", method, resources
