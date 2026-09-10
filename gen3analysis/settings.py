@@ -57,6 +57,7 @@ class CoreSettings(BaseSettings):
     ENABLED_ROUTES: Optional[str] = "all"
 
     # Auth settings
+    METADATA_AUTH_RESOURCE: str = "/mmrf_metadata"
     DEBUG_SKIP_AUTH: Optional[bool] = False
     MOCK_AUTH: Optional[bool] = False
 

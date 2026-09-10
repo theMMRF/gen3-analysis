@@ -10,7 +10,7 @@ from gen3authz.client.arborist.async_client import ArboristClient
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from gen3analysis.auth import Gen3SdkAuth
+from gen3analysis.metadata_auth import MetadataAuthMiddleware
 from gen3analysis.gen3.es_client import get_nested_registry
 from gen3analysis.gen3.guppyQuery import GuppyGQLClient
 from gen3analysis.settings import settings, logger
@@ -112,9 +112,6 @@ async def lifespan(app: FastAPI):
         get_nested_registry()
 
     app.state.guppy_client = guppy_client
-    app.state.gen3_sdk_auth = None
-    if settings.DEPLOYMENT_TYPE == "dev":
-        app.state.gen3_sdk_auth = Gen3SdkAuth(endpoint=settings.HOSTNAME)
 
     app.state.arborist_client = ArboristClient(
         arborist_base_url=settings.ARBORIST_URL,
@@ -166,7 +163,6 @@ async def lifespan(app: FastAPI):
         await app.state.guppy_client.close()
     app.state.guppy_client = None
     app.state.gdc_graphql_client = None
-    app.state.gen3_sdk_auth = None
     app.state.arborist_client = None
     if app.state.terms_acceptance_engine:
         await app.state.terms_acceptance_engine.dispose()
@@ -200,6 +196,7 @@ def get_app() -> fastapi.FastAPI:
     )
     fastapi_app.include_router(route_aggregator)
     fastapi_app.add_middleware(ClientDisconnectMiddleware)
+    fastapi_app.add_middleware(MetadataAuthMiddleware)
 
     return fastapi_app
 

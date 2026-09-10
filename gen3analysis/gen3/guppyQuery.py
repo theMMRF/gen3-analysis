@@ -7,6 +7,7 @@ import httpx
 from starlette.status import HTTP_500_INTERNAL_SERVER_ERROR
 
 from gen3analysis.settings import logger, settings
+from gen3analysis.metadata_auth import request_access_token
 from gen3analysis.gen3.csrfTokenCache import CSRFTokenCache
 
 
@@ -46,6 +47,7 @@ class GuppyGQLClient:
         variables: Dict[str, Any] = None,
         retry_count: int = 3,
     ) -> Dict[str, Any]:
+        access_token = request_access_token.get() or access_token
         for attempt in range(retry_count + 1):
             try:
                 #    csrf_token = await self.csrf_cache.get_token()
@@ -104,6 +106,7 @@ class GuppyGQLClient:
         payload: Dict,
         retry_count: int = 3,
     ) -> Dict[str, Any]:
+        access_token = request_access_token.get() or access_token
         for attempt in range(retry_count + 1):
             try:
                 #    csrf_token = await self.csrf_cache.get_token()

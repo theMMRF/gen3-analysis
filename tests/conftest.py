@@ -2,7 +2,7 @@ from httpx import AsyncClient, ASGITransport
 import pytest
 import pytest_asyncio
 from asgi_lifespan import LifespanManager
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import json
 from pathlib import Path
 from gen3analysis.main import get_app
@@ -56,7 +56,14 @@ def app():
 @pytest_asyncio.fixture(scope="function")
 async def client(app):
     async with LifespanManager(app):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as test_client:
-            yield test_client
+        # Existing route tests run as an approved metadata reader. Authentication
+        # rejection and token propagation are exercised separately in security/.
+        with patch.object(
+            app.state.arborist_client, "auth_request", AsyncMock(return_value=True)
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+                headers={"Authorization": f"Bearer {TEST_ACCESS_TOKEN}"},
+            ) as test_client:
+                yield test_client
