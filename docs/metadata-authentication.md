@@ -8,7 +8,7 @@ Missing credentials return 401, rejected permissions return 403, and an unavaila
 
 A context variable carries the approved token through the entire request, including sync handlers and downstream Guppy calls. Existing cookie-only handler signatures cannot discard a local frontend bearer token. The context is reset after the response and never stored on the shared Guppy client. Protected responses use `Cache-Control: private, no-store`.
 
-The dev rollout requires the companion MMRF Guppy collection policy and ProteinPaint service/proxy changes. Deploying this image before those dependencies are ready will correctly deny unauthenticated server-to-server calls. See `mmrf_gen3/docs/dev-metadata-auth.md` for the coordinated rollout.
+The coordinated rollout is dev-only. Before merging or deploying backend or GitOps changes, prepare the companion MMRF Guppy collection policy, ProteinPaint service/proxy changes, its metadata-only service credentials, compatible images, and an isolated validation environment. Deploying this image before those dependencies are ready will correctly deny unauthenticated server-to-server calls. See `mmrf_gen3/docs/dev-metadata-auth.md` for the coordinated rollout.
 
 Run the tests with the repository's Python 3.9 environment:
 
