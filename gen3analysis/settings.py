@@ -58,6 +58,7 @@ class CoreSettings(BaseSettings):
 
     # Auth settings
     METADATA_AUTH_RESOURCE: str = "/mmrf_metadata"
+    FILE_VISIBILITY_ENABLED: bool = False
     DEBUG_SKIP_AUTH: Optional[bool] = False
     MOCK_AUTH: Optional[bool] = False
 

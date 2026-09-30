@@ -8,6 +8,10 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from gen3analysis.settings import settings
+from gen3analysis.file_visibility import (
+    downloadable_resources,
+    request_visibility_resources,
+)
 
 request_access_token: ContextVar[Optional[str]] = ContextVar(
     "request_access_token", default=None
@@ -92,6 +96,21 @@ class MetadataAuthMiddleware:
             )(scope, receive, send)
             return
 
+        visibility_resources = ()
+        if settings.FILE_VISIBILITY_ENABLED:
+            try:
+                mapping = await scope["app"].state.arborist_client.auth_mapping(
+                    jwt=token
+                )
+                visibility_resources = downloadable_resources(mapping)
+            except Exception:
+                await JSONResponse(
+                    {"detail": "Authorization service unavailable"},
+                    status_code=503,
+                    headers={"Cache-Control": "no-store"},
+                )(scope, receive, send)
+                return
+        visibility_context = request_visibility_resources.set(visibility_resources)
         context = request_access_token.set(token)
         scope.setdefault("state", {})["metadata_access_token"] = token
 
@@ -110,3 +129,4 @@ class MetadataAuthMiddleware:
             await self.app(scope, receive, private_response)
         finally:
             request_access_token.reset(context)
+            request_visibility_resources.reset(visibility_context)
