@@ -8,7 +8,7 @@ from starlette.status import (
     HTTP_403_FORBIDDEN,
 )
 
-from gen3analysis.settings import logger
+from gen3analysis.settings import logger, settings
 from gen3analysis.metadata_auth import caller_token, request_access_token
 
 # auto_error=False prevents FastAPI from raising a 403 when the request
@@ -59,7 +59,10 @@ class Auth:
 
         try:
             token_claims = await access_token(
-                "user", "openid", audience="openid", purpose="access"
+                "user",
+                "openid",
+                audience=settings.ACCESS_TOKEN_AUDIENCE,
+                purpose="access",
             )(bearer_token)
         except Exception as e:
             err_msg = "Could not verify, parse, and/or validate provided access token"
