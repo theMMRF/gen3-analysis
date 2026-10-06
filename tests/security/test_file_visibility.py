@@ -126,3 +126,29 @@ def test_unfiltered_background_or_policy_override_is_rejected(body):
 def test_aggregation_aliases_and_zero_count_terms_rejected(body):
     with pytest.raises(ValueError):
         apply_visibility(body)
+
+
+@pytest.mark.parametrize("value", [0, "0", 0.5, "0.5", False, None, [], "invalid"])
+def test_unsafe_term_count_is_rejected_in_nested_alias(value):
+    with pytest.raises(ValueError):
+        apply_visibility(
+            {
+                "aggs": {},
+                "aggregations": {
+                    "outer": {
+                        "aggs": {
+                            "ids": {
+                                "terms": {"field": "file_id", "min_doc_count": value}
+                            }
+                        }
+                    }
+                },
+            }
+        )
+
+
+@pytest.mark.parametrize("value", [1, "1", 1.5])
+def test_positive_term_count_remains_allowed(value):
+    apply_visibility(
+        {"aggs": {"ids": {"terms": {"field": "file_id", "min_doc_count": value}}}}
+    )

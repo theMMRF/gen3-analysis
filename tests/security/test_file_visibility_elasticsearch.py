@@ -150,12 +150,17 @@ def test_more_than_1024_permissions_and_no_hidden_bucket_keys(cluster):
         assert {
             bucket["key"] for bucket in result["aggregations"]["ids"]["buckets"]
         } == {"public", "private-a"}
-        with pytest.raises(ValueError):
-            es.search(
-                index=index,
-                body={
-                    "aggs": {"ids": {"terms": {"field": "file_id", "min_doc_count": 0}}}
-                },
-            )
+        for value in (0, "0", 0.5):
+            with pytest.raises(ValueError):
+                es.search(
+                    index=index,
+                    body={
+                        "aggs": {
+                            "ids": {
+                                "terms": {"field": "file_id", "min_doc_count": value}
+                            }
+                        }
+                    },
+                )
     finally:
         request_visibility_resources.reset(context)

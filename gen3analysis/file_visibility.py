@@ -2,6 +2,7 @@
 
 from contextvars import ContextVar
 from copy import deepcopy
+import math
 
 from elasticsearch import Elasticsearch
 
@@ -63,13 +64,28 @@ def visibility_query(resources):
     return {"bool": {"should": allowed, "minimum_should_match": 1}}
 
 
+def _unsafe_terms_count(aggregation):
+    """Reject term counts that coerce to zero or cannot safely become a long."""
+    terms = aggregation.get("terms")
+    if not isinstance(terms, dict) or "min_doc_count" not in terms:
+        return False
+    value = terms["min_doc_count"]
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return True
+    try:
+        number = float(value)
+        return not math.isfinite(number) or number < 1
+    except (ValueError, OverflowError):
+        return True
+
+
 def _has_global_aggregation(aggregations):
     return any(
         any(
             key in aggregation
             for key in ("global", "significant_terms", "significant_text")
         )
-        or aggregation.get("terms", {}).get("min_doc_count") == 0
+        or _unsafe_terms_count(aggregation)
         or _has_global_aggregation(aggregation.get("aggs", {}))
         or _has_global_aggregation(aggregation.get("aggregations", {}))
         for aggregation in aggregations.values()
