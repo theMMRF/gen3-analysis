@@ -10,7 +10,7 @@ from gen3analysis.settings import settings
 request_visibility_resources = ContextVar("request_visibility_resources", default=())
 
 
-def downloadable_resources(mapping):
+def visibility_resources(mapping):
     if not isinstance(mapping, dict) or any(
         not isinstance(actions, list) for actions in mapping.values()
     ):
@@ -21,8 +21,8 @@ def downloadable_resources(mapping):
             for resource, actions in mapping.items()
             if any(
                 isinstance(action, dict)
-                and action.get("service") in ("fence", "*")
-                and action.get("method") in ("read-storage", "*")
+                and action.get("service") in ("indexd", "*")
+                and action.get("method") in ("read-metadata", "*")
                 for action in actions
             )
         )
@@ -43,12 +43,15 @@ def visibility_query(resources):
                         {"term": {visibility: "restricted"}},
                         {"exists": {"field": authz}},
                         {
-                            "terms_set": {
-                                authz: {
-                                    "terms": sorted(set(resources)),
-                                    "minimum_should_match_script": {
-                                        "source": "doc[params.field].size()",
-                                        "params": {"field": authz},
+                            "script": {
+                                "script": {
+                                    "source": "def required = doc[params.field]; if (required.size() == 0) return false; for (def resource : required) { if (!params.allowed.containsKey(resource)) return false; } return true;",
+                                    "params": {
+                                        "field": authz,
+                                        "allowed": {
+                                            resource: True
+                                            for resource in sorted(set(resources))
+                                        },
                                     },
                                 }
                             }
@@ -66,9 +69,9 @@ def _has_global_aggregation(aggregations):
             key in aggregation
             for key in ("global", "significant_terms", "significant_text")
         )
-        or _has_global_aggregation(
-            aggregation.get("aggs", aggregation.get("aggregations", {}))
-        )
+        or aggregation.get("terms", {}).get("min_doc_count") == 0
+        or _has_global_aggregation(aggregation.get("aggs", {}))
+        or _has_global_aggregation(aggregation.get("aggregations", {}))
         for aggregation in aggregations.values()
     )
 
@@ -82,7 +85,9 @@ def apply_visibility(body):
         "_gen3_visibility_authz",
     }.intersection(body.get("runtime_mappings", {})):
         raise ValueError("Query cannot override or bypass file visibility")
-    if _has_global_aggregation(body.get("aggs", body.get("aggregations", {}))):
+    if _has_global_aggregation(body.get("aggs", {})) or _has_global_aggregation(
+        body.get("aggregations", {})
+    ):
         raise ValueError("Aggregations cannot bypass file visibility")
     body["query"] = {
         "bool": {

@@ -133,3 +133,29 @@ def test_unmarked_index_is_hidden_when_enabled(monkeypatch):
         admin.indices.delete(index=index)
         es.close()
         admin.close()
+
+
+def test_more_than_1024_permissions_and_no_hidden_bucket_keys(cluster):
+    es, index = cluster
+    resources = tuple("/large/" + str(i) for i in range(1100)) + (A,)
+    context = request_visibility_resources.set(resources)
+    try:
+        result = es.search(
+            index=index, body={"aggs": {"ids": {"terms": {"field": "file_id"}}}}
+        )
+        assert {hit["_source"]["file_id"] for hit in result["hits"]["hits"]} == {
+            "public",
+            "private-a",
+        }
+        assert {
+            bucket["key"] for bucket in result["aggregations"]["ids"]["buckets"]
+        } == {"public", "private-a"}
+        with pytest.raises(ValueError):
+            es.search(
+                index=index,
+                body={
+                    "aggs": {"ids": {"terms": {"field": "file_id", "min_doc_count": 0}}}
+                },
+            )
+    finally:
+        request_visibility_resources.reset(context)

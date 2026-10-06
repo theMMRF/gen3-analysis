@@ -174,7 +174,7 @@ async def test_visibility_resources_are_scoped_to_request(monkeypatch):
     app = protected_app()
     app.state.arborist_client.auth_mapping = AsyncMock(
         return_value={
-            "/private": [{"service": "fence", "method": "read-storage"}],
+            "/private": [{"service": "indexd", "method": "read-metadata"}],
             "/metadata": [{"service": "gen3-analysis", "method": "read"}],
         }
     )

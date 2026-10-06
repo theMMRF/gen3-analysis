@@ -7,7 +7,7 @@ from elasticsearch import Elasticsearch
 from gen3analysis.file_visibility import (
     VisibilityElasticsearch,
     apply_visibility,
-    downloadable_resources,
+    visibility_resources,
     request_visibility_resources,
 )
 from gen3analysis.settings import settings
@@ -20,17 +20,18 @@ def enabled(monkeypatch):
     monkeypatch.setattr(settings, "FILE_VISIBILITY_ENABLED", True)
 
 
-def test_download_action_is_exact():
-    assert downloadable_resources(
+def test_independent_visibility_action_is_exact():
+    assert visibility_resources(
         {
-            RESOURCE: [{"service": "fence", "method": "read-storage"}],
+            RESOURCE: [{"service": "indexd", "method": "read-metadata"}],
+            "download": [{"service": "fence", "method": "read-storage"}],
             "metadata": [{"service": "guppy", "method": "read"}],
             "wrong": [{"service": "fence", "method": "not-read-storage"}],
             "wildcard": [{"service": "*", "method": "*"}],
         }
     ) == (RESOURCE, "wildcard")
     with pytest.raises(ValueError):
-        downloadable_resources({"error": {}})
+        visibility_resources({"error": {}})
 
 
 def test_wraps_search_and_count_below_dsl_and_projection():
@@ -48,7 +49,7 @@ def test_wraps_search_and_count_below_dsl_and_projection():
             assert sent["query"]["bool"]["filter"][0] == body["query"]
             assert sent["query"]["bool"]["filter"][1]["bool"]["should"][1]["bool"][
                 "filter"
-            ][2]["terms_set"]["_gen3_visibility_authz"]["terms"] == [RESOURCE]
+            ][2]["script"]["script"]["params"]["allowed"] == {RESOURCE: True}
             assert sent["_source"] == body["_source"]
         with patch.object(Elasticsearch, "count", return_value={}) as count:
             es.count(body={"query": body["query"]}, index="files")
@@ -99,5 +100,29 @@ def test_disabled_preserves_existing_query(monkeypatch):
     ],
 )
 def test_unfiltered_background_or_policy_override_is_rejected(body):
+    with pytest.raises(ValueError):
+        apply_visibility(body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"aggs": {}, "aggregations": {"leaked": {"global": {}}}},
+        {"aggs": {"outer": {"aggs": {}, "aggregations": {"leaked": {"global": {}}}}}},
+        {"aggs": {"identifiers": {"terms": {"field": "file_id", "min_doc_count": 0}}}},
+        {
+            "aggs": {
+                "outer": {
+                    "aggs": {
+                        "identifiers": {
+                            "terms": {"field": "file_id", "min_doc_count": 0}
+                        }
+                    }
+                }
+            }
+        },
+    ],
+)
+def test_aggregation_aliases_and_zero_count_terms_rejected(body):
     with pytest.raises(ValueError):
         apply_visibility(body)
