@@ -8,7 +8,7 @@ concurrency:
 
 jobs:
   Security:
-    if: github.repository_owner == 'uc-cdis' || (github.ref_name != 'feature/selective-file-visibility' && github.head_ref != 'feature/selective-file-visibility')
+    if: github.repository_owner == 'uc-cdis' || (github.ref_name != 'feature/selective-file-visibility' && github.head_ref != 'feature/selective-file-visibility' && !(github.ref_type == 'tag' && startsWith(github.ref_name, 'ecr-')))
     name: Security Pipeline
     uses: uc-cdis/.github/.github/workflows/securitypipeline.yaml@master
     with:
@@ -16,7 +16,7 @@ jobs:
     secrets: inherit
 
   UnitTest:
-    if: github.repository_owner == 'uc-cdis' || (github.ref_name != 'feature/selective-file-visibility' && github.head_ref != 'feature/selective-file-visibility')
+    if: github.repository_owner == 'uc-cdis' || (github.ref_name != 'feature/selective-file-visibility' && github.head_ref != 'feature/selective-file-visibility' && !(github.ref_type == 'tag' && startsWith(github.ref_name, 'ecr-')))
     name: Python Unit Tests
     uses: uc-cdis/.github/.github/workflows/python_unit_test.yaml@master
     with:
@@ -26,7 +26,7 @@ jobs:
        run-coveralls: true
 
   ImageBuildAndPush:
-    if: github.repository_owner == 'uc-cdis' || (github.ref_name != 'feature/selective-file-visibility' && github.head_ref != 'feature/selective-file-visibility')
+    if: github.repository_owner == 'uc-cdis' || (github.ref_name != 'feature/selective-file-visibility' && github.head_ref != 'feature/selective-file-visibility' && !(github.ref_type == 'tag' && startsWith(github.ref_name, 'ecr-')))
     name: Build Image and Push
     uses: uc-cdis/.github/.github/workflows/image_build_push.yaml@master
     with:
