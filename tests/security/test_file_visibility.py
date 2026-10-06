@@ -128,7 +128,22 @@ def test_aggregation_aliases_and_zero_count_terms_rejected(body):
         apply_visibility(body)
 
 
-@pytest.mark.parametrize("value", [0, "0", 0.5, "0.5", False, None, [], "invalid"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        0,
+        "0",
+        0.5,
+        "0.5",
+        "0.99999999999999999",
+        "9.9999999999999999e-1",
+        ".99999999999999999",
+        False,
+        None,
+        [],
+        "invalid",
+    ],
+)
 def test_unsafe_term_count_is_rejected_in_nested_alias(value):
     with pytest.raises(ValueError):
         apply_visibility(
@@ -147,7 +162,7 @@ def test_unsafe_term_count_is_rejected_in_nested_alias(value):
         )
 
 
-@pytest.mark.parametrize("value", [1, "1", 1.5])
+@pytest.mark.parametrize("value", [1, "1", 1.5, "1.00000000000000001", ".1e1", "1.5"])
 def test_positive_term_count_remains_allowed(value):
     apply_visibility(
         {"aggs": {"ids": {"terms": {"field": "file_id", "min_doc_count": value}}}}

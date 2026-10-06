@@ -150,7 +150,7 @@ def test_more_than_1024_permissions_and_no_hidden_bucket_keys(cluster):
         assert {
             bucket["key"] for bucket in result["aggregations"]["ids"]["buckets"]
         } == {"public", "private-a"}
-        for value in (0, "0", 0.5):
+        for value in (0, "0", 0.5, "0.99999999999999999", "9.9999999999999999e-1"):
             with pytest.raises(ValueError):
                 es.search(
                     index=index,

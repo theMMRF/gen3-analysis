@@ -2,7 +2,7 @@
 
 from contextvars import ContextVar
 from copy import deepcopy
-import math
+from decimal import Decimal, InvalidOperation
 
 from elasticsearch import Elasticsearch
 
@@ -73,9 +73,10 @@ def _unsafe_terms_count(aggregation):
     if isinstance(value, bool) or not isinstance(value, (str, int, float)):
         return True
     try:
-        number = float(value)
-        return not math.isfinite(number) or number < 1
-    except (ValueError, OverflowError):
+        # ES truncates decimal strings before converting to a long; do not round first.
+        number = Decimal(str(value))
+        return not number.is_finite() or number < 1
+    except (InvalidOperation, ValueError, OverflowError):
         return True
 
 
