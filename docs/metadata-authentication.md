@@ -1,5 +1,20 @@
 # Metadata authentication
 
+## Fence token audience during upgrades
+
+`ACCESS_TOKEN_AUDIENCE` controls the exact audience required by Analysis token
+validation (including the terms-acceptance endpoints). Its default remains
+`openid` for existing Fence deployments. Set it to `gen3` when upgrading Fence
+to 2026.10, which no longer puts OAuth scopes such as `openid` in the token's
+audience claim. The `openid` and `user` scopes are still required separately;
+signature, expiry, access-token purpose, and Arborist authorization remain enforced.
+
+Deploy the compatible Analysis image and this environment setting together with
+the Fence upgrade. An audience mismatch makes the terms status endpoint return
+401 and the MMRF frontend redirect an otherwise logged-in user back to Login.
+For browser diagnostics use `/terms-api/status`; `/api/terms/status` is the
+frontend's internal route and the shared external `/api/` prefix serves Sheepdog.
+
 All HTTP data routes are guarded before request handlers run, including handlers that query Elasticsearch directly. GET/HEAD health and version routes are the only exceptions. Swagger and new routers are protected by default.
 
 Supply `Authorization: Bearer <access-token>` or the browser's `access_token` cookie. A supplied Authorization header takes precedence; a malformed or rejected header does not fall back to a cookie. Arborist validates the token and authorizes `gen3-analysis/read` on `METADATA_AUTH_RESOURCE` (default `/mmrf_metadata`). This is a metadata-only permission, independent of repository file downloads.

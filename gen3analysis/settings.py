@@ -1,6 +1,6 @@
 from typing import Optional, List
 from cdislogging import get_logger
-from pydantic import computed_field
+from pydantic import Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
 import os, sys
@@ -57,6 +57,8 @@ class CoreSettings(BaseSettings):
     ENABLED_ROUTES: Optional[str] = "all"
 
     # Auth settings
+    # Fence 2026.10 uses "gen3"; keep the legacy default for staged upgrades.
+    ACCESS_TOKEN_AUDIENCE: str = Field(default="openid", min_length=1)
     METADATA_AUTH_RESOURCE: str = "/mmrf_metadata"
     FILE_VISIBILITY_ENABLED: bool = False
     DEBUG_SKIP_AUTH: Optional[bool] = False
