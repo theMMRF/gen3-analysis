@@ -35,4 +35,4 @@ jobs:
           python-version: '3.9'
       - run: poetry env use "$(command -v python)"
       - run: poetry install --no-interaction
-      - run: poetry run pytest tests/security tests/test_timeout_config.py
+      - run: poetry run bash bin/test.sh
