@@ -60,7 +60,7 @@ class CoreSettings(BaseSettings):
     # Fence 2026.10 uses "gen3"; keep the legacy default for staged upgrades.
     ACCESS_TOKEN_AUDIENCE: str = Field(default="openid", min_length=1)
     METADATA_AUTH_RESOURCE: str = "/mmrf_metadata"
-    FILE_VISIBILITY_ENABLED: bool = False
+    PROJECT_VISIBILITY_ENABLED: bool = False
     DEBUG_SKIP_AUTH: Optional[bool] = False
     MOCK_AUTH: Optional[bool] = False
 

@@ -150,7 +150,7 @@ async def test_guppy_uses_validated_request_identity_not_cookie_argument():
 async def test_visibility_mapping_failure_stops_data_query(monkeypatch):
     from gen3analysis.settings import settings
 
-    monkeypatch.setattr(settings, "FILE_VISIBILITY_ENABLED", True)
+    monkeypatch.setattr(settings, "PROJECT_VISIBILITY_ENABLED", True)
     app = protected_app()
     app.state.arborist_client.auth_mapping = AsyncMock(
         side_effect=RuntimeError("unavailable")
@@ -170,7 +170,7 @@ async def test_visibility_resources_are_scoped_to_request(monkeypatch):
     from gen3analysis.settings import settings
     from gen3analysis.file_visibility import request_visibility_resources
 
-    monkeypatch.setattr(settings, "FILE_VISIBILITY_ENABLED", True)
+    monkeypatch.setattr(settings, "PROJECT_VISIBILITY_ENABLED", True)
     app = protected_app()
     app.state.arborist_client.auth_mapping = AsyncMock(
         return_value={

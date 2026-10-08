@@ -6,18 +6,30 @@ from elasticsearch import Elasticsearch
 
 from gen3analysis.file_visibility import (
     VisibilityElasticsearch,
-    apply_visibility,
+    apply_visibility as apply_policy,
+    redact_file_source,
+    protected_file_paths,
     visibility_resources,
     request_visibility_resources,
 )
 from gen3analysis.settings import settings
+
+
+def apply_visibility(body):
+    return apply_policy(body, {"files": "files._gen3_file_authz"})
+
 
 RESOURCE = "/programs/MMRF/projects/private"
 
 
 @pytest.fixture(autouse=True)
 def enabled(monkeypatch):
-    monkeypatch.setattr(settings, "FILE_VISIBILITY_ENABLED", True)
+    monkeypatch.setattr(settings, "PROJECT_VISIBILITY_ENABLED", True)
+    monkeypatch.setattr(
+        VisibilityElasticsearch,
+        "_layout",
+        lambda self, index: ([index], {"files": "files._gen3_file_authz"}),
+    )
 
 
 def test_independent_visibility_action_is_exact():
@@ -47,10 +59,12 @@ def test_wraps_search_and_count_below_dsl_and_projection():
             es.search(body=body, index="files")
             sent = search.call_args.kwargs["body"]
             assert sent["query"]["bool"]["filter"][0] == body["query"]
-            assert sent["query"]["bool"]["filter"][1]["bool"]["should"][1]["bool"][
-                "filter"
-            ][2]["script"]["script"]["params"]["allowed"] == {RESOURCE: True}
-            assert sent["_source"] == body["_source"]
+            assert sent["query"]["bool"]["filter"][1]["bool"]["filter"][1]["bool"][
+                "should"
+            ][1]["bool"]["filter"][1]["script"]["script"]["params"]["allowed"] == {
+                RESOURCE: True
+            }
+            assert sent["_source"] is True
         with patch.object(Elasticsearch, "count", return_value={}) as count:
             es.count(body={"query": body["query"]}, index="files")
             assert "filter" in count.call_args.kwargs["body"]["query"]["bool"]
@@ -72,17 +86,32 @@ async def test_parallel_users_do_not_share_permissions():
     first, second = await asyncio.gather(query((RESOURCE,)), query(()))
     assert first != second
     assert (
-        len(apply_visibility({})["query"]["bool"]["filter"][1]["bool"]["should"]) == 1
+        apply_visibility({})["query"]["bool"]["filter"][1]["bool"]["filter"][1]["bool"][
+            "should"
+        ][1]["bool"]["filter"][1]["script"]["script"]["params"]["allowed"]
+        == {}
     )
 
 
-def test_global_aggregation_cannot_bypass_policy():
-    with pytest.raises(ValueError):
-        apply_visibility({"aggs": {"outer": {"aggs": {"all": {"global": {}}}}}})
+def test_global_facets_retain_contract_with_filtered_children():
+    result = apply_visibility(
+        {
+            "aggs": {
+                "all": {
+                    "global": {},
+                    "aggs": {"names": {"terms": {"field": "file_name"}}},
+                }
+            }
+        }
+    )
+    assert result["aggs"]["all"]["global"] == {}
+    guard = result["aggs"]["all"]["aggs"]["__gen3_visible_files"]
+    assert guard["filter"] == result["query"]["bool"]["filter"][1]
+    assert guard["aggs"]["names"] == {"terms": {"field": "file_name"}}
 
 
 def test_disabled_preserves_existing_query(monkeypatch):
-    monkeypatch.setattr(settings, "FILE_VISIBILITY_ENABLED", False)
+    monkeypatch.setattr(settings, "PROJECT_VISIBILITY_ENABLED", False)
     body = {"query": {"match_all": {}}}
     assert apply_visibility(body) is body
 
@@ -167,3 +196,57 @@ def test_positive_term_count_remains_allowed(value):
     apply_visibility(
         {"aggs": {"ids": {"terms": {"field": "file_id", "min_doc_count": value}}}}
     )
+
+
+def test_shared_case_redacts_private_files_and_recomputes_counts():
+    source = {
+        "case_id": "c1",
+        "files": [
+            {"file_id": "a", "file_name": "rna.txt", "_gen3_file_authz": [RESOURCE]},
+            {
+                "file_id": "b",
+                "file_name": "methylation.txt",
+                "_gen3_file_authz": ["/private/methylation"],
+            },
+        ],
+        "summary": {"file_count": 2, "file_size": 109},
+        "_gen3_file_summary": [
+            {
+                "authz": [RESOURCE],
+                "file_count": 1,
+                "file_size": 9,
+                "data_category": ["RNA"],
+                "experimental_strategy": [],
+            },
+            {
+                "authz": ["/private/methylation"],
+                "file_count": 1,
+                "file_size": 100,
+                "data_category": ["methylation"],
+                "experimental_strategy": [],
+            },
+        ],
+    }
+    result = redact_file_source(source, (RESOURCE,))
+    assert result["case_id"] == "c1"
+    assert result["files"] == [{"file_id": "a", "file_name": "rna.txt"}]
+    assert result["summary"]["file_count"] == 1
+    assert result["summary"]["file_size"] == 9
+    assert "methylation" not in str(result)
+    assert "_gen3_file_" not in str(result)
+
+
+def test_bypassing_parameters_and_unbound_pit_are_rejected():
+    es = VisibilityElasticsearch(hosts=["http://localhost:59200"])
+    with pytest.raises(ValueError):
+        es.search(index="file", params={"q": "*"})
+    with pytest.raises(ValueError):
+        es.search(body={"pit": {"id": "unknown"}})
+
+
+def test_precomputed_file_summary_filters_are_rejected():
+    with pytest.raises(ValueError):
+        apply_visibility({"aggs": {"count": {"sum": {"field": "summary.file_count"}}}})
+    with pytest.raises(ValueError):
+        apply_visibility({"query": {"range": {"summary.file_count": {"gt": 0}}}})
+    apply_visibility({"_source": ["summary.file_count"]})

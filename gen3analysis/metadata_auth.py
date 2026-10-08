@@ -97,7 +97,7 @@ class MetadataAuthMiddleware:
             return
 
         allowed_visibility_resources = ()
-        if settings.FILE_VISIBILITY_ENABLED:
+        if settings.PROJECT_VISIBILITY_ENABLED:
             try:
                 mapping = await scope["app"].state.arborist_client.auth_mapping(
                     jwt=token

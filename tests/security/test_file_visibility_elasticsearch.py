@@ -22,7 +22,7 @@ A, B = "/programs/MMRF/projects/private-a", "/programs/MMRF/projects/private-b"
 
 @pytest.fixture
 def cluster(monkeypatch):
-    monkeypatch.setattr(settings, "FILE_VISIBILITY_ENABLED", True)
+    monkeypatch.setattr(settings, "PROJECT_VISIBILITY_ENABLED", True)
     admin = Elasticsearch(URL)
     es = VisibilityElasticsearch(URL)
     index = "visibility-test-" + uuid.uuid4().hex
@@ -33,28 +33,37 @@ def cluster(monkeypatch):
                 "properties": {
                     "file_id": {"type": "keyword"},
                     "category": {"type": "keyword"},
-                    "_gen3_visibility": {"type": "keyword"},
-                    "_gen3_visibility_authz": {"type": "keyword"},
+                    "_gen3_file_visibility_version": {"type": "integer"},
+                    "_gen3_file_authz": {"type": "keyword"},
                 }
             }
         },
     )
     documents = [
         {"file_id": "legacy", "category": "public"},
-        {"file_id": "public", "category": "public", "_gen3_visibility": "public"},
+        {
+            "file_id": "public",
+            "category": "public",
+            "_gen3_file_visibility_version": 1,
+            "_gen3_file_authz": ["/open"],
+        },
         {
             "file_id": "private-a",
             "category": "secret",
-            "_gen3_visibility": "restricted",
-            "_gen3_visibility_authz": [A],
+            "_gen3_file_visibility_version": 1,
+            "_gen3_file_authz": [A],
         },
         {
             "file_id": "private-ab",
             "category": "secret",
-            "_gen3_visibility": "restricted",
-            "_gen3_visibility_authz": [A, B],
+            "_gen3_file_visibility_version": 1,
+            "_gen3_file_authz": [A, B],
         },
-        {"file_id": "invalid", "category": "secret", "_gen3_visibility": "restricted"},
+        {
+            "file_id": "invalid",
+            "category": "secret",
+            "_gen3_file_visibility_version": 1,
+        },
     ]
     for document in documents:
         admin.index(index=index, id=document["file_id"], body=document)
@@ -67,7 +76,10 @@ def cluster(monkeypatch):
         admin.close()
 
 
-@pytest.mark.parametrize("resources,expected", [((), 1), ((A,), 2), ((A, B), 3)])
+@pytest.mark.parametrize(
+    "resources,expected",
+    [((), 0), (("/open",), 1), (("/open", A), 2), (("/open", A, B), 3)],
+)
 def test_results_counts_facets_dsl_and_pit(cluster, resources, expected):
     es, index = cluster
     context = request_visibility_resources.set(resources)
@@ -121,13 +133,14 @@ def test_results_counts_facets_dsl_and_pit(cluster, resources, expected):
 
 
 def test_unmarked_index_is_hidden_when_enabled(monkeypatch):
-    monkeypatch.setattr(settings, "FILE_VISIBILITY_ENABLED", True)
+    monkeypatch.setattr(settings, "PROJECT_VISIBILITY_ENABLED", True)
     admin, es = Elasticsearch(URL), VisibilityElasticsearch(URL)
     index = "visibility-legacy-" + uuid.uuid4().hex
     admin.index(index=index, body={"file_id": "legacy"}, refresh=True)
     context = request_visibility_resources.set((A,))
     try:
-        assert es.count(index=index)["count"] == 0
+        with pytest.raises(ValueError, match="prepared"):
+            es.count(index=index)
     finally:
         request_visibility_resources.reset(context)
         admin.indices.delete(index=index)
@@ -137,7 +150,10 @@ def test_unmarked_index_is_hidden_when_enabled(monkeypatch):
 
 def test_more_than_1024_permissions_and_no_hidden_bucket_keys(cluster):
     es, index = cluster
-    resources = tuple("/large/" + str(i) for i in range(1100)) + (A,)
+    resources = tuple("/large/" + str(i) for i in range(1100)) + (
+        "/open",
+        A,
+    )
     context = request_visibility_resources.set(resources)
     try:
         result = es.search(
@@ -164,3 +180,144 @@ def test_more_than_1024_permissions_and_no_hidden_bucket_keys(cluster):
                 )
     finally:
         request_visibility_resources.reset(context)
+
+
+def test_global_facets_ignore_query_but_not_visibility(cluster):
+    es, index = cluster
+    context = request_visibility_resources.set(("/open",))
+    try:
+        result = es.search(
+            index=index,
+            body={
+                "query": {"match_none": {}},
+                "aggs": {
+                    "all": {
+                        "global": {},
+                        "aggs": {"ids": {"terms": {"field": "file_id"}}},
+                    }
+                },
+            },
+        )
+        assert result["hits"]["total"]["value"] == 0
+        assert result["aggregations"]["all"]["doc_count"] == 1
+        assert result["aggregations"]["all"]["ids"]["buckets"] == [
+            {"key": "public", "doc_count": 1}
+        ]
+    finally:
+        request_visibility_resources.reset(context)
+
+
+def test_shared_cases_nested_queries_facets_and_pit(monkeypatch):
+    monkeypatch.setattr(settings, "PROJECT_VISIBILITY_ENABLED", True)
+    admin, es = Elasticsearch(URL), VisibilityElasticsearch(URL)
+    index = "visibility-case-" + uuid.uuid4().hex
+    properties = {
+        "case_id": {"type": "keyword"},
+        "_gen3_file_visibility_version": {"type": "integer"},
+        "_gen3_file_authz": {"type": "keyword"},
+        "_gen3_file_summary": {"type": "object", "enabled": False},
+        "files": {
+            "type": "nested",
+            "properties": {
+                "file_id": {"type": "keyword"},
+                "file_name": {"type": "keyword"},
+                "_gen3_file_authz": {"type": "keyword"},
+            },
+        },
+    }
+    admin.indices.create(index=index, body={"mappings": {"properties": properties}})
+    admin.index(
+        index=index,
+        id="case-1",
+        refresh=True,
+        body={
+            "case_id": "case-1",
+            "_gen3_file_visibility_version": 1,
+            "files": [
+                {
+                    "file_id": "public",
+                    "file_name": "rna.txt",
+                    "_gen3_file_authz": ["/open"],
+                },
+                {
+                    "file_id": "secret",
+                    "file_name": "methylation.txt",
+                    "_gen3_file_authz": [A],
+                },
+            ],
+            "summary": {"file_count": 2, "file_size": 109},
+            "_gen3_file_summary": [
+                {"authz": ["/open"], "file_count": 1, "file_size": 9},
+                {"authz": [A], "file_count": 1, "file_size": 100},
+            ],
+        },
+    )
+    context = request_visibility_resources.set(("/open",))
+    try:
+        result = es.search(
+            index=index,
+            body={
+                "_source": [
+                    "case_id",
+                    "files.file_name",
+                    "summary.file_count",
+                    "summary.file_size",
+                ]
+            },
+        )
+        assert result["hits"]["hits"][0]["_source"] == {
+            "case_id": "case-1",
+            "files": [{"file_name": "rna.txt"}],
+            "summary": {"file_count": 1, "file_size": 9},
+        }
+        probe = {
+            "nested": {
+                "path": "files",
+                "query": {"term": {"files.file_name": "methylation.txt"}},
+            }
+        }
+        assert es.count(index=index, body={"query": probe})["count"] == 0
+        result = es.search(
+            index=index,
+            body={
+                "aggs": {
+                    "probe": {"filter": probe},
+                    "files": {
+                        "nested": {"path": "files"},
+                        "aggs": {
+                            "names": {"terms": {"field": "files.file_name"}},
+                            "examples": {
+                                "top_hits": {"size": 10, "_source": ["file_name"]}
+                            },
+                        },
+                    },
+                }
+            },
+        )
+        assert result["aggregations"]["probe"]["doc_count"] == 0
+        assert result["aggregations"]["files"]["doc_count"] == 1
+        assert result["aggregations"]["files"]["names"]["buckets"] == [
+            {"key": "rna.txt", "doc_count": 1}
+        ]
+        assert "methylation" not in str(result)
+        assert "secret" not in str(result)
+        assert "_gen3_file_" not in str(result)
+        pit = es.open_point_in_time(index=index, keep_alive="1m")["id"]
+        try:
+            result = es.search(
+                body={
+                    "pit": {"id": pit, "keep_alive": "1m"},
+                    "_source": ["files.file_name"],
+                }
+            )
+            pit = result.get("pit_id", pit)
+            assert result["hits"]["hits"][0]["_source"] == {
+                "files": [{"file_name": "rna.txt"}]
+            }
+        finally:
+            es.close_point_in_time(body={"id": pit})
+    finally:
+        request_visibility_resources.reset(context)
+        admin.indices.delete(index=index)
+        es.close()
+        admin.close()
