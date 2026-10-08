@@ -1,7 +1,10 @@
 """Apply file visibility to every direct Elasticsearch search and count."""
 
 from contextvars import ContextVar
-from collections import OrderedDict
+import base64
+import hashlib
+import hmac
+import json
 import re
 import time
 from copy import deepcopy
@@ -212,8 +215,12 @@ def _check_query(value, parent=""):
                 raise ValueError("Query file summaries through the filtered file index")
             if (
                 name == "order"
-                and isinstance(item, dict)
-                and any(field not in ("_key", "_count") for field in item)
+                and isinstance(item, (dict, list))
+                and any(
+                    not isinstance(order, dict)
+                    or any(field not in ("_key", "_count") for field in order)
+                    for order in (item if isinstance(item, list) else [item])
+                )
             ):
                 raise ValueError(
                     "Custom aggregation ordering can expose unfiltered file counts"
@@ -482,10 +489,6 @@ def project_file_source(source, selection):
 class VisibilityElasticsearch(Elasticsearch):
     """Apply ownership before queries/counts, then redact and project responses."""
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._visibility_pits = OrderedDict()
-
     def _layout(self, index):
         if not index:
             raise ValueError("An explicit served index or bound PIT is required")
@@ -501,6 +504,7 @@ class VisibilityElasticsearch(Elasticsearch):
     def _safe_parameters(params, kwargs):
         overrides = {
             "q",
+            "scroll",
             "source",
             "filter_path",
             "_source",
@@ -513,7 +517,16 @@ class VisibilityElasticsearch(Elasticsearch):
         if overrides.intersection(params or {}) or overrides.intersection(kwargs):
             raise ValueError("Query parameters cannot bypass project visibility")
 
-    def _remember_pit(self, identifier, paths, keep_alive):
+    @staticmethod
+    def _pit_key():
+        key = settings.PROJECT_VISIBILITY_CURSOR_KEY
+        if not key or len(key.encode("utf-8")) < 32:
+            raise ValueError(
+                "PROJECT_VISIBILITY_CURSOR_KEY must contain at least 32 bytes"
+            )
+        return key.encode("utf-8")
+
+    def _seal_pit(self, identifier, physical, keep_alive):
         duration = re.fullmatch(r"([0-9]+)(ms|s|m|h|d)", keep_alive or "1m")
         if not duration:
             raise ValueError("Invalid PIT lifetime")
@@ -521,33 +534,64 @@ class VisibilityElasticsearch(Elasticsearch):
             int(duration[1])
             * {"ms": 0.001, "s": 1, "m": 60, "h": 3600, "d": 86400}[duration[2]]
         )
-        self._visibility_pits[identifier] = (
-            paths,
-            time.monotonic() + min(seconds, 3600),
-        )
-        self._visibility_pits.move_to_end(identifier)
-        while len(self._visibility_pits) > 1024:
-            self._visibility_pits.popitem(last=False)
+        payload = base64.urlsafe_b64encode(
+            json.dumps(
+                {
+                    "pit": identifier,
+                    "indices": physical,
+                    "expires": time.time() + min(seconds, 3600),
+                },
+                separators=(",", ":"),
+            ).encode()
+        ).decode()
+        signature = hmac.new(
+            self._pit_key(), payload.encode(), hashlib.sha256
+        ).hexdigest()
+        return payload + "." + signature
+
+    def _unseal_pit(self, token):
+        try:
+            if not isinstance(token, str) or len(token) > 262144:
+                raise ValueError()
+            payload, signature = token.rsplit(".", 1)
+            expected = hmac.new(
+                self._pit_key(), payload.encode(), hashlib.sha256
+            ).hexdigest()
+            if not hmac.compare_digest(signature, expected):
+                raise ValueError()
+            binding = json.loads(base64.urlsafe_b64decode(payload))
+            if (
+                binding["expires"] <= time.time()
+                or not binding["indices"]
+                or not binding["pit"]
+            ):
+                raise ValueError()
+            return binding
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ValueError("PIT is unbound or expired; restart pagination") from exc
 
     def open_point_in_time(self, index, params=None, headers=None, **kwargs):
         if not settings.PROJECT_VISIBILITY_ENABLED:
             return super().open_point_in_time(
                 index=index, params=params, headers=headers, **kwargs
             )
-        physical, paths = self._layout(index)
+        self._pit_key()
+        physical, _ = self._layout(index)
         response = super().open_point_in_time(
             index=physical, params=params, headers=headers, **kwargs
         )
-        self._remember_pit(
+        response["id"] = self._seal_pit(
             response["id"],
-            paths,
+            physical,
             kwargs.get("keep_alive") or (params or {}).get("keep_alive", "1m"),
         )
         return response
 
     def close_point_in_time(self, body=None, params=None, headers=None, **kwargs):
-        if body and isinstance(body, dict):
-            self._visibility_pits.pop(body.get("id"), None)
+        if settings.PROJECT_VISIBILITY_ENABLED:
+            if not isinstance(body, dict):
+                raise ValueError("A bound PIT is required")
+            body = {**body, "id": self._unseal_pit(body.get("id"))["pit"]}
         return super().close_point_in_time(
             body=body, params=params, headers=headers, **kwargs
         )
@@ -561,10 +605,15 @@ class VisibilityElasticsearch(Elasticsearch):
         selection = (body or {}).get("_source")
         pit = (body or {}).get("pit")
         if pit:
-            remembered = self._visibility_pits.get(pit.get("id"))
-            if index or not remembered or remembered[1] <= time.monotonic():
-                raise ValueError("PIT is unbound or expired; restart pagination")
-            physical, paths = None, remembered[0]
+            if index:
+                raise ValueError("PIT searches cannot override the bound index")
+            binding = self._unseal_pit(pit.get("id"))
+            bound_physical, paths = self._layout(binding["indices"])
+            if set(bound_physical) != set(binding["indices"]):
+                raise ValueError("PIT physical index binding changed")
+            body = deepcopy(body)
+            body["pit"]["id"] = binding["pit"]
+            physical = None
         else:
             physical, paths = self._layout(index)
         response = super().search(
@@ -575,7 +624,9 @@ class VisibilityElasticsearch(Elasticsearch):
             **kwargs
         )
         if pit and response.get("pit_id"):
-            self._remember_pit(response["pit_id"], paths, pit.get("keep_alive", "1m"))
+            response["pit_id"] = self._seal_pit(
+                response["pit_id"], bound_physical, pit.get("keep_alive", "1m")
+            )
         response = redact_file_response(response, request_visibility_resources.get())
         for hit in response.get("hits", {}).get("hits", []):
             if "_source" in hit:
@@ -594,3 +645,34 @@ class VisibilityElasticsearch(Elasticsearch):
         return super().count(
             body=body, index=physical, params=params, headers=headers, **kwargs
         )
+
+    def _unsupported_read(self, method, *args, **kwargs):
+        if settings.PROJECT_VISIBILITY_ENABLED:
+            raise ValueError(
+                "Use filtered search/count; this read API is disabled with project visibility"
+            )
+        return getattr(super(), method)(*args, **kwargs)
+
+    def scroll(self, *args, **kwargs):
+        return self._unsupported_read("scroll", *args, **kwargs)
+
+    def msearch(self, *args, **kwargs):
+        return self._unsupported_read("msearch", *args, **kwargs)
+
+    def get(self, *args, **kwargs):
+        return self._unsupported_read("get", *args, **kwargs)
+
+    def mget(self, *args, **kwargs):
+        return self._unsupported_read("mget", *args, **kwargs)
+
+    def get_source(self, *args, **kwargs):
+        return self._unsupported_read("get_source", *args, **kwargs)
+
+    def explain(self, *args, **kwargs):
+        return self._unsupported_read("explain", *args, **kwargs)
+
+    def termvectors(self, *args, **kwargs):
+        return self._unsupported_read("termvectors", *args, **kwargs)
+
+    def mtermvectors(self, *args, **kwargs):
+        return self._unsupported_read("mtermvectors", *args, **kwargs)

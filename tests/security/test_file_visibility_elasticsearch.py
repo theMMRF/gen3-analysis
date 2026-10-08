@@ -23,6 +23,11 @@ A, B = "/programs/MMRF/projects/private-a", "/programs/MMRF/projects/private-b"
 @pytest.fixture
 def cluster(monkeypatch):
     monkeypatch.setattr(settings, "PROJECT_VISIBILITY_ENABLED", True)
+    monkeypatch.setattr(
+        settings,
+        "PROJECT_VISIBILITY_CURSOR_KEY",
+        "test-key-shared-across-workers-32bytes",
+    )
     admin = Elasticsearch(URL)
     es = VisibilityElasticsearch(URL)
     index = "visibility-test-" + uuid.uuid4().hex
@@ -107,6 +112,7 @@ def test_results_counts_facets_dsl_and_pit(cluster, resources, expected):
             == expected
         )
         pit = es.open_point_in_time(index=index, keep_alive="1m")["id"]
+        es = VisibilityElasticsearch(URL)  # Next HTTP request can use a different worker.
         found, after = [], None
         try:
             while True:
@@ -134,6 +140,11 @@ def test_results_counts_facets_dsl_and_pit(cluster, resources, expected):
 
 def test_unmarked_index_is_hidden_when_enabled(monkeypatch):
     monkeypatch.setattr(settings, "PROJECT_VISIBILITY_ENABLED", True)
+    monkeypatch.setattr(
+        settings,
+        "PROJECT_VISIBILITY_CURSOR_KEY",
+        "test-key-shared-across-workers-32bytes",
+    )
     admin, es = Elasticsearch(URL), VisibilityElasticsearch(URL)
     index = "visibility-legacy-" + uuid.uuid4().hex
     admin.index(index=index, body={"file_id": "legacy"}, refresh=True)
@@ -209,6 +220,11 @@ def test_global_facets_ignore_query_but_not_visibility(cluster):
 
 def test_shared_cases_nested_queries_facets_and_pit(monkeypatch):
     monkeypatch.setattr(settings, "PROJECT_VISIBILITY_ENABLED", True)
+    monkeypatch.setattr(
+        settings,
+        "PROJECT_VISIBILITY_CURSOR_KEY",
+        "test-key-shared-across-workers-32bytes",
+    )
     admin, es = Elasticsearch(URL), VisibilityElasticsearch(URL)
     index = "visibility-case-" + uuid.uuid4().hex
     properties = {
@@ -303,6 +319,7 @@ def test_shared_cases_nested_queries_facets_and_pit(monkeypatch):
         assert "secret" not in str(result)
         assert "_gen3_file_" not in str(result)
         pit = es.open_point_in_time(index=index, keep_alive="1m")["id"]
+        es = VisibilityElasticsearch(URL)  # Next HTTP request can use a different worker.
         try:
             result = es.search(
                 body={

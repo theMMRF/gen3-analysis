@@ -26,9 +26,17 @@ RESOURCE = "/programs/MMRF/projects/private"
 def enabled(monkeypatch):
     monkeypatch.setattr(settings, "PROJECT_VISIBILITY_ENABLED", True)
     monkeypatch.setattr(
+        settings,
+        "PROJECT_VISIBILITY_CURSOR_KEY",
+        "test-key-shared-across-workers-32bytes",
+    )
+    monkeypatch.setattr(
         VisibilityElasticsearch,
         "_layout",
-        lambda self, index: ([index], {"files": "files._gen3_file_authz"}),
+        lambda self, index: (
+            index if isinstance(index, list) else [index],
+            {"files": "files._gen3_file_authz"},
+        ),
     )
 
 
@@ -250,3 +258,76 @@ def test_precomputed_file_summary_filters_are_rejected():
     with pytest.raises(ValueError):
         apply_visibility({"query": {"range": {"summary.file_count": {"gt": 0}}}})
     apply_visibility({"_source": ["summary.file_count"]})
+
+
+@pytest.mark.parametrize(
+    "order", [{"files>_count": "desc"}, [{"files>_count": "desc"}]]
+)
+def test_private_aggregation_order_is_rejected(order):
+    with pytest.raises(ValueError):
+        apply_visibility(
+            {"aggs": {"names": {"terms": {"field": "case_id", "order": order}}}}
+        )
+
+
+def test_standard_array_aggregation_order_is_preserved():
+    apply_visibility(
+        {
+            "aggs": {
+                "names": {
+                    "terms": {
+                        "field": "case_id",
+                        "order": [{"_count": "desc"}, {"_key": "asc"}],
+                    }
+                }
+            }
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "scroll",
+        "msearch",
+        "get",
+        "mget",
+        "get_source",
+        "explain",
+        "termvectors",
+        "mtermvectors",
+    ],
+)
+def test_unfiltered_reads_fail_closed_and_keep_legacy_behavior(method, monkeypatch):
+    es = VisibilityElasticsearch(hosts=["http://localhost:59200"])
+    with patch.object(
+        Elasticsearch, method, return_value={"legacy": True}
+    ) as transport:
+        with pytest.raises(ValueError):
+            getattr(es, method)()
+        transport.assert_not_called()
+        monkeypatch.setattr(settings, "PROJECT_VISIBILITY_ENABLED", False)
+        assert getattr(es, method)() == {"legacy": True}
+
+
+def test_pit_binding_survives_worker_changes_and_rejects_tampering(monkeypatch):
+    first = VisibilityElasticsearch(hosts=["http://localhost:59200"])
+    second = VisibilityElasticsearch(hosts=["http://localhost:59200"])
+    with patch.object(
+        Elasticsearch, "open_point_in_time", return_value={"id": "raw-pit"}
+    ):
+        token = first.open_point_in_time(index="physical", keep_alive="1m")["id"]
+    with patch.object(
+        Elasticsearch, "search", return_value={"pit_id": "rotated-pit"}
+    ) as transport:
+        result = second.search(body={"pit": {"id": token, "keep_alive": "1m"}})
+        assert transport.call_args.kwargs["body"]["pit"]["id"] == "raw-pit"
+        assert first._unseal_pit(result["pit_id"])["pit"] == "rotated-pit"
+        with pytest.raises(ValueError):
+            second.search(body={"pit": {"id": token + "bad"}})
+        with patch("gen3analysis.file_visibility.time.time", return_value=10**12):
+            with pytest.raises(ValueError):
+                second.search(body={"pit": {"id": token}})
+        monkeypatch.setattr(settings, "PROJECT_VISIBILITY_CURSOR_KEY", None)
+        with pytest.raises(ValueError):
+            second.search(body={"pit": {"id": token}})

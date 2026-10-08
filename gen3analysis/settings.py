@@ -61,6 +61,7 @@ class CoreSettings(BaseSettings):
     ACCESS_TOKEN_AUDIENCE: str = Field(default="openid", min_length=1)
     METADATA_AUTH_RESOURCE: str = "/mmrf_metadata"
     PROJECT_VISIBILITY_ENABLED: bool = False
+    PROJECT_VISIBILITY_CURSOR_KEY: Optional[str] = None
     DEBUG_SKIP_AUTH: Optional[bool] = False
     MOCK_AUTH: Optional[bool] = False
 
