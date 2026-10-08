@@ -1,4 +1,5 @@
 from elasticsearch import Elasticsearch
+from gen3analysis.file_visibility import VisibilityElasticsearch
 from typing import Optional
 from gen3analysis.filters.es.nesting_registry import NestingRegistry
 from functools import lru_cache
@@ -17,7 +18,7 @@ def get_es() -> Elasticsearch:
         "timeout": settings.ES_TIMEOUT,
         "retry_on_timeout": True,
     }
-    return Elasticsearch(**kwargs)
+    return VisibilityElasticsearch(**kwargs)
 
 
 @lru_cache

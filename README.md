@@ -35,3 +35,13 @@ The documentation can be browsed in the [docs](docs) folder, and key documents a
 * [Detailed API Documentation](http://petstore.swagger.io/?url=https://raw.githubusercontent.com/uc-cdis/gen3-analysis/main/docs/openapi.yaml)
 * [Quickstart](docs/quickstart.md)
 * [Terms & Conditions acceptance](docs/terms_acceptance.md) — schema, API, and deployed environment setup
+
+
+Project file visibility is disabled by default. When opting in with
+`PROJECT_VISIBILITY_ENABLED=true`, provision `PROJECT_VISIBILITY_CURSOR_KEY`
+through a Kubernetes Secret: at least 32 random bytes, identical across every
+worker and replica. It signs the immutable physical-index binding and expiry of
+pagination PITs; raw or tampered PIT identifiers fail closed. Rotating the key
+invalidates outstanding cursors, which clients can restart. Search/count reads
+are guarded; unfiltered document, multi-search and scroll APIs are disabled in
+this mode. Existing behavior is preserved when the feature is off.

@@ -144,3 +144,50 @@ async def test_guppy_uses_validated_request_identity_not_cookie_argument():
         request_access_token.reset(context)
         await guppy.close()
     assert seen == ["Bearer validated-local-bearer"]
+
+
+@pytest.mark.asyncio
+async def test_visibility_mapping_failure_stops_data_query(monkeypatch):
+    from gen3analysis.settings import settings
+
+    monkeypatch.setattr(settings, "PROJECT_VISIBILITY_ENABLED", True)
+    app = protected_app()
+    app.state.arborist_client.auth_mapping = AsyncMock(
+        side_effect=RuntimeError("unavailable")
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/cases/", headers={"Authorization": "Bearer reader"}
+        )
+    assert response.status_code == 503
+    assert app.state.queries == 0
+
+
+@pytest.mark.asyncio
+async def test_visibility_resources_are_scoped_to_request(monkeypatch):
+    from gen3analysis.settings import settings
+    from gen3analysis.file_visibility import request_visibility_resources
+
+    monkeypatch.setattr(settings, "PROJECT_VISIBILITY_ENABLED", True)
+    app = protected_app()
+    app.state.arborist_client.auth_mapping = AsyncMock(
+        return_value={
+            "/private": [{"service": "indexd", "method": "read-metadata"}],
+            "/metadata": [{"service": "gen3-analysis", "method": "read"}],
+        }
+    )
+
+    @app.get("/visibility")
+    async def visibility():
+        return {"resources": request_visibility_resources.get()}
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/visibility", headers={"Authorization": "Bearer reader"}
+        )
+    assert response.json() == {"resources": ["/private"]}
+    assert request_visibility_resources.get() == ()
