@@ -155,6 +155,7 @@ async def cohort_download_query(
     gen3_graphql_client: GuppyGQLClient = Depends(get_guppy_client),
     auth: Auth = Depends(Auth),
 ) -> JSONResponse:
+    """Export metadata with explicit filters, preserving caller authorization."""
     cohort_filter = body.cohort_filter
     case_index = body.case_index
     cohort_item_field = body.cohort_item_field
@@ -189,6 +190,8 @@ async def cohort_download_query(
         )
 
         return JSONResponse(status_code=status.HTTP_200_OK, content=data)
+    except download.CohortDownloadLimitError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as e:
         logger.error(f"Error while processing download query: {e}")
         raise HTTPException(status_code=500, detail="Error with download query")
