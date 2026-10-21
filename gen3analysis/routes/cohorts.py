@@ -155,6 +155,7 @@ async def cohort_download_query(
     gen3_graphql_client: GuppyGQLClient = Depends(get_guppy_client),
     auth: Auth = Depends(Auth),
 ) -> JSONResponse:
+    """Export metadata with explicit filters, preserving caller authorization."""
     cohort_filter = body.cohort_filter
     case_index = body.case_index
     cohort_item_field = body.cohort_item_field
@@ -163,16 +164,18 @@ async def cohort_download_query(
     fields = body.fields
     case_ids_filter_path = body.case_ids_filter_path
 
-    if cohort_filter is None or len(cohort_filter) == 0:
+    # An explicit empty filter means all authorized cases/files. The frontend
+    # sends {} when no demographic or repository facet is selected.
+    if cohort_filter is None:
         raise HTTPException(status_code=400, detail="Must have cohort_filter")
 
-    if query_filter is None or len(query_filter) == 0:
+    if query_filter is None:
         raise HTTPException(status_code=400, detail="Must have query_filter")
 
     if index is None or len(index) == 0:
         raise HTTPException(status_code=400, detail="Must have index")
 
-    if case_ids_filter_path is None or len(query_filter) == 0:
+    if not case_ids_filter_path:
         raise HTTPException(status_code=400, detail="Must have case_ids_filter_path")
 
     try:
@@ -187,6 +190,8 @@ async def cohort_download_query(
         )
 
         return JSONResponse(status_code=status.HTTP_200_OK, content=data)
+    except download.CohortDownloadLimitError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as e:
         logger.error(f"Error while processing download query: {e}")
         raise HTTPException(status_code=500, detail="Error with download query")
