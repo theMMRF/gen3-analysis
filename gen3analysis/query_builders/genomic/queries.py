@@ -453,7 +453,7 @@ def build_gene_query(
 
     top_gene_query = Q(
         "bool",
-        must=must_clauses,
+        filter=must_clauses,
         should=[
             Q(
                 "bool",
@@ -648,7 +648,7 @@ def query_top_genes(
 
     top_gene_query = Q(
         "bool",
-        must=must_clauses,
+        filter=must_clauses,
         should=[
             Q(
                 "bool",
