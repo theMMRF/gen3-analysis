@@ -35,3 +35,14 @@ The documentation can be browsed in the [docs](docs) folder, and key documents a
 * [Detailed API Documentation](http://petstore.swagger.io/?url=https://raw.githubusercontent.com/uc-cdis/gen3-analysis/main/docs/openapi.yaml)
 * [Quickstart](docs/quickstart.md)
 * [Terms & Conditions acceptance](docs/terms_acceptance.md) — schema, API, and deployed environment setup
+
+## MMRF image publishing
+
+MMRF preview/deployment images are built by the separately configured AWS
+CodePipeline/CodeBuild integration. GitHub Actions does not publish this fork's
+images to Quay or to the upstream CTDS registry. Opening a standard source PR
+continues to use the external preview-build integration; it does not deploy it.
+
+The inherited CTDS image-publishing job has been removed. Existing GitHub
+repository secrets are not deleted by this change; verify other consumers before
+removing obsolete credentials. Other CI checks remain as configured.
