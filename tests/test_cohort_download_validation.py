@@ -73,14 +73,17 @@ class CohortDownloadValidation(unittest.IsolatedAsyncioTestCase):
     async def test_oversized_all_case_export_fails_before_collecting_or_downloading(
         self,
     ):
-        with patch.object(
-            download, "query_case_count", return_value=settings.MAX_CASES + 1
-        ), patch.object(download, "query_case_ids") as ids:
-            client = AsyncMock()
-            with self.assertRaises(download.CohortDownloadLimitError):
-                await download.download_query(client, {}, {}, "cases.case_id", "file")
-            ids.assert_not_called()
-            client.download.assert_not_awaited()
+        for cohort in [{}, {"unrecognized": {"case_id": ["test-case"]}}]:
+            with self.subTest(cohort=cohort), patch.object(
+                download, "query_case_count", return_value=settings.MAX_CASES + 1
+            ), patch.object(download, "query_case_ids") as ids:
+                client = AsyncMock()
+                with self.assertRaises(download.CohortDownloadLimitError):
+                    await download.download_query(
+                        client, cohort, {}, "cases.case_id", "file"
+                    )
+                ids.assert_not_called()
+                client.download.assert_not_awaited()
 
     async def test_limit_is_inclusive_and_filtered_cohort_behavior_is_unchanged(self):
         for cohort in [{}, {"in": {"case_id": ["test-case"]}}]:
