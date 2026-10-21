@@ -453,7 +453,7 @@ def build_gene_query(
 
     top_gene_query = Q(
         "bool",
-        must=must_clauses,
+        filter=must_clauses,
         should=[
             Q(
                 "bool",
@@ -648,7 +648,7 @@ def query_top_genes(
 
     top_gene_query = Q(
         "bool",
-        must=must_clauses,
+        filter=must_clauses,
         should=[
             Q(
                 "bool",
@@ -720,7 +720,7 @@ def query_top_genes(
     gene_info = []
     for hit in hits:
         x_score = hit.get("_score", 0)
-        max_score = max(x_score - 1, 0)
+        max_score = max(x_score, 0)
         info = dict(hit.get("_source", {}))
         info["numCases"] = max_score
         gene_info.append(info)
@@ -964,11 +964,11 @@ def gene_table_query(
     for x in results["hits"]["hits"]:
 
         x_score = glom(x, "_score", default=0)
-        max_score = max(x_score - 1, 0)
+        max_score = max(x_score, 0)
         gene_information[x._id] = {
             "gene_id": x._id,
             "id": x._id,  # to be compatible with GDC response
-            # score is the number of cases that have this gene, and for some reason it is off by 1
+            # The nested constant-score query contributes one per matching case.
             "case_count": max_score,
             **(x._source.to_dict()),
         }
