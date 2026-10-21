@@ -411,7 +411,7 @@ def query_ssm_ids(
         ssm_ids.append(
             {
                 "ssm_id": ssm["_id"],
-                "score": max(ssm["_score"], 0),
+                "score": max(ssm["_score"] - 1, 0),
                 "mutation_subtype": glom(ssm, "_source.mutation_subtype", default=""),
                 "genomic_dna_change": glom(
                     ssm, "_source.genomic_dna_change", default=""
