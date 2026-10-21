@@ -27,13 +27,13 @@ async def download_query(
 ):
     """Download cohort metadata; reject an oversized all-case ID lookup."""
     try:
-        if not cohort_filter and query_case_count([]) > settings.MAX_CASES:
+        cohort_filter_gql = parse_gql_filter(cohort_filter)
+        if cohort_filter_gql is None and query_case_count([]) > settings.MAX_CASES:
             raise CohortDownloadLimitError(
                 f"All-case export exceeds the supported {settings.MAX_CASES}-case "
                 "limit. Select a smaller cohort."
             )
 
-        cohort_filter_gql = parse_gql_filter(cohort_filter)
         case_ids = query_case_ids(cohort_filter_gql)
 
         # build a filter containing the cohort ids and merge with the other filters
