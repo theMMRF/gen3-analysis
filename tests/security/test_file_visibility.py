@@ -68,8 +68,8 @@ def test_wraps_search_and_count_below_dsl_and_projection():
         with patch.object(Elasticsearch, "search", return_value={}) as search:
             es.search(body=body, index="files")
             sent = search.call_args.kwargs["body"]
-            assert sent["query"]["bool"]["filter"][0] == body["query"]
-            assert sent["query"]["bool"]["filter"][1]["bool"]["filter"][1]["bool"][
+            assert sent["query"]["bool"]["must"][0] == body["query"]
+            assert sent["query"]["bool"]["filter"][0]["bool"]["filter"][1]["bool"][
                 "should"
             ][1]["bool"]["filter"][1]["script"]["script"]["params"]["allowed"] == {
                 RESOURCE: True
@@ -123,7 +123,7 @@ async def test_parallel_users_do_not_share_permissions():
     first, second = await asyncio.gather(query((RESOURCE,)), query(()))
     assert first != second
     assert (
-        apply_visibility({})["query"]["bool"]["filter"][1]["bool"]["filter"][1]["bool"][
+        apply_visibility({})["query"]["bool"]["filter"][0]["bool"]["filter"][1]["bool"][
             "should"
         ][1]["bool"]["filter"][1]["script"]["script"]["params"]["allowed"]
         == {}
@@ -143,7 +143,7 @@ def test_global_facets_retain_contract_with_filtered_children():
     )
     assert result["aggs"]["all"]["global"] == {}
     guard = result["aggs"]["all"]["aggs"]["__gen3_visible_files"]
-    assert guard["filter"] == result["query"]["bool"]["filter"][1]
+    assert guard["filter"] == result["query"]["bool"]["filter"][0]
     assert guard["aggs"]["names"] == {"terms": {"field": "file_name"}}
 
 

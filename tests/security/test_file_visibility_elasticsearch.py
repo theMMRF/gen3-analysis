@@ -306,6 +306,20 @@ def test_shared_cases_nested_queries_facets_and_pit(monkeypatch):
             "files": [{"file_name": "rna.txt"}],
             "summary": {"file_count": 1, "file_size": 9},
         }
+        scored = es.search(
+            index=index,
+            body={
+                "_source": ["case_id"],
+                "query": {
+                    "nested": {
+                        "path": "files",
+                        "score_mode": "sum",
+                        "query": {"match_all": {}},
+                    }
+                },
+            },
+        )
+        assert scored["hits"]["hits"][0]["_score"] == 1
         probe = {
             "nested": {
                 "path": "files",

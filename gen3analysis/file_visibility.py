@@ -238,7 +238,9 @@ def _check_query(value, parent=""):
 
 
 def _filtered(query, guard):
-    return {"bool": {"filter": [query or {"match_all": {}}, guard]}}
+    # Genomic queries encode affected-case counts in _score. Keep the caller's
+    # query in scoring context; only the authorization guard is a filter.
+    return {"bool": {"must": [query or {"match_all": {}}], "filter": [guard]}}
 
 
 def _rewrite_query(value, paths, resources):
