@@ -318,6 +318,38 @@ def _rewrite_sort(sort, paths, resources):
     return result
 
 
+def visibility_source(selection, paths):
+    """Fetch requested data and correlated ownership, without full case documents."""
+    if selection is None or isinstance(selection, bool):
+        return selection
+    filters = selection if isinstance(selection, dict) else {"includes": selection}
+    includes = filters.get("includes", filters.get("include", ["*"]))
+    includes = includes if isinstance(includes, list) else [includes]
+
+    def overlaps(pattern, path):
+        wildcard = re.search(r"[*?]", pattern)
+        if wildcard:
+            prefix = pattern[: wildcard.start()]
+            return path.startswith(prefix) or prefix.startswith(path + ".")
+        return (
+            pattern == path
+            or pattern.startswith(path + ".")
+            or path.startswith(pattern + ".")
+        )
+
+    required = [FILE_AUTHZ]
+    required.extend(
+        field
+        for path, field in paths.items()
+        if any(overlaps(pattern, path) for pattern in includes)
+    )
+    if any(re.search(r"[*?]|(?:^|\.)summary(?:\.|$)", pattern) for pattern in includes):
+        required.extend(["*_gen3_file_summary", "*summary.case_count"])
+    # Apply the caller's excludes after redaction; excluding an ACL here could
+    # otherwise expose a private nested file selected only by its name.
+    return list(dict.fromkeys(includes + required))
+
+
 def apply_visibility(body, paths=None):
     if not settings.PROJECT_VISIBILITY_ENABLED:
         return body
@@ -333,7 +365,9 @@ def apply_visibility(body, paths=None):
     body["query"] = _filtered(
         _rewrite_query(body.get("query"), paths, resources), visibility_query(resources)
     )
-    body["_source"] = True
+    selection = visibility_source(body.get("_source"), paths)
+    if selection is not None:
+        body["_source"] = selection
     if "post_filter" in body:
         body["post_filter"] = _rewrite_query(body["post_filter"], paths, resources)
     for key in ("aggs", "aggregations"):

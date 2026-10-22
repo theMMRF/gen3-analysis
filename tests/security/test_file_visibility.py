@@ -5,12 +5,14 @@ import pytest
 from elasticsearch import Elasticsearch
 
 from gen3analysis.file_visibility import (
+    FILE_AUTHZ,
     VisibilityElasticsearch,
     apply_visibility as apply_policy,
     redact_file_source,
     protected_file_paths,
     visibility_resources,
     request_visibility_resources,
+    visibility_source,
 )
 from gen3analysis.settings import settings
 
@@ -72,13 +74,40 @@ def test_wraps_search_and_count_below_dsl_and_projection():
             ][1]["bool"]["filter"][1]["script"]["script"]["params"]["allowed"] == {
                 RESOURCE: True
             }
-            assert sent["_source"] is True
+            assert sent["_source"] == ["file_name", "_gen3_file_authz"]
         with patch.object(Elasticsearch, "count", return_value={}) as count:
             es.count(body={"query": body["query"]}, index="files")
             assert "filter" in count.call_args.kwargs["body"]["query"]["bool"]
     finally:
         request_visibility_resources.reset(context)
     assert body["query"] == {"term": {"file_id": "secret"}}
+
+
+def test_clinical_projections_do_not_fetch_complete_case_documents():
+    fields = ["case_id", "demographic.vital_status", "diagnoses.days_to_last_follow_up"]
+    assert apply_visibility({"size": 10000, "_source": fields})["_source"] == fields + [
+        FILE_AUTHZ
+    ]
+    assert apply_visibility({"_source": False})["_source"] is False
+
+
+@pytest.mark.parametrize(
+    "field", ["files.file_name", "files", "fi*.file_name", "files.?ile_name"]
+)
+def test_source_selection_keeps_correlated_ownership(field):
+    result = visibility_source(
+        {"includes": [field], "excludes": ["*_gen3_file_authz"]},
+        {"files": "files._gen3_file_authz", "other": "other._gen3_file_authz"},
+    )
+    assert "files._gen3_file_authz" in result
+    assert "other._gen3_file_authz" not in result
+
+
+def test_summary_source_selection_preserves_visible_count_sidecars():
+    assert (
+        "*_gen3_file_summary"
+        in apply_visibility({"_source": ["summary.file_count"]})["_source"]
+    )
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
 """Optional real ES 7 integration: VISIBILITY_TEST_ES_URL=http://localhost:59200."""
 
 import os
+import json
 import uuid
 
 import pytest
@@ -112,7 +113,9 @@ def test_results_counts_facets_dsl_and_pit(cluster, resources, expected):
             == expected
         )
         pit = es.open_point_in_time(index=index, keep_alive="1m")["id"]
-        es = VisibilityElasticsearch(URL)  # Next HTTP request can use a different worker.
+        es = VisibilityElasticsearch(
+            URL
+        )  # Next HTTP request can use a different worker.
         found, after = [], None
         try:
             while True:
@@ -229,6 +232,7 @@ def test_shared_cases_nested_queries_facets_and_pit(monkeypatch):
     index = "visibility-case-" + uuid.uuid4().hex
     properties = {
         "case_id": {"type": "keyword"},
+        "unrequested_payload": {"type": "text", "index": False},
         "_gen3_file_visibility_version": {"type": "integer"},
         "_gen3_file_authz": {"type": "keyword"},
         "_gen3_file_summary": {"type": "object", "enabled": False},
@@ -248,6 +252,7 @@ def test_shared_cases_nested_queries_facets_and_pit(monkeypatch):
         refresh=True,
         body={
             "case_id": "case-1",
+            "unrequested_payload": "x" * (1024 * 1024),
             "_gen3_file_visibility_version": 1,
             "files": [
                 {
@@ -270,6 +275,21 @@ def test_shared_cases_nested_queries_facets_and_pit(monkeypatch):
     )
     context = request_visibility_resources.set(("/open",))
     try:
+        original_request = es.transport.perform_request
+        raw_searches = []
+
+        def record_request(method, url, *args, **kwargs):
+            response = original_request(method, url, *args, **kwargs)
+            if url.endswith("/_search"):
+                raw_searches.append(response)
+            return response
+
+        monkeypatch.setattr(es.transport, "perform_request", record_request)
+        clinical = es.search(index=index, body={"size": 10000, "_source": ["case_id"]})
+        assert clinical["hits"]["hits"][0]["_source"] == {"case_id": "case-1"}
+        assert len(json.dumps(raw_searches[-1])) < 2048
+        es.search(index=index, body={"_source": False})
+        assert "_source" not in raw_searches[-1]["hits"]["hits"][0]
         result = es.search(
             index=index,
             body={
@@ -319,7 +339,9 @@ def test_shared_cases_nested_queries_facets_and_pit(monkeypatch):
         assert "secret" not in str(result)
         assert "_gen3_file_" not in str(result)
         pit = es.open_point_in_time(index=index, keep_alive="1m")["id"]
-        es = VisibilityElasticsearch(URL)  # Next HTTP request can use a different worker.
+        es = VisibilityElasticsearch(
+            URL
+        )  # Next HTTP request can use a different worker.
         try:
             result = es.search(
                 body={
