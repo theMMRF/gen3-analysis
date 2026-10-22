@@ -165,7 +165,7 @@ def fetch_top_genes_page(
                 continue
 
         if next_after:
-            next_cursor = encode_cursor(pit_id, next_after)
+            next_cursor = encode_cursor(resp.get("pit_id", pit_id), next_after)
         else:
             # No more pages; PIT will expire naturally
             next_cursor = None

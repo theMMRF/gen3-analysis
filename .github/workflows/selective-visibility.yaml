@@ -1,0 +1,38 @@
+name: Selective visibility
+on:
+  pull_request:
+  push:
+    branches: [feature/selective-file-visibility, feature/selective-file-visibility-13.1]
+permissions:
+  contents: read
+jobs:
+  verification:
+    runs-on: ubuntu-latest
+    services:
+      elasticsearch:
+        image: docker.elastic.co/elasticsearch/elasticsearch:7.17.29
+        env:
+          discovery.type: single-node
+          xpack.security.enabled: 'false'
+          ES_JAVA_OPTS: '-Xms512m -Xmx512m'
+        ports: ['9200:9200']
+        options: >-
+          --health-cmd "curl -fsS http://localhost:9200/_cluster/health"
+          --health-interval 10s --health-timeout 5s --health-retries 12
+    env:
+      VISIBILITY_TEST_ES_URL: http://localhost:9200
+      PROMETHEUS_MULTIPROC_DIR: /tmp/visibility-metrics
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+      - run: pip install poetry==2.3.3
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.9'
+      - run: poetry env use "$(command -v python)"
+      - run: poetry install --no-interaction
+      - run: poetry run bash bin/test.sh

@@ -4,6 +4,7 @@ on: pull_request
 
 jobs:
   build_docs:
+    if: github.repository_owner == 'uc-cdis' || (github.ref_name != 'feature/selective-file-visibility' && github.head_ref != 'feature/selective-file-visibility')
 
     runs-on: ubuntu-latest
 

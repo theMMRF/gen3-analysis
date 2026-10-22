@@ -55,7 +55,7 @@ def test_es_client_uses_configured_timeout():
     es_client = importlib.reload(es_client)
     es_client.get_es.cache_clear()
     try:
-        with patch("gen3analysis.gen3.es_client.Elasticsearch") as mock_elasticsearch:
+        with patch("gen3analysis.gen3.es_client.VisibilityElasticsearch") as mock_elasticsearch:
             es_client.get_es()
 
         assert (
