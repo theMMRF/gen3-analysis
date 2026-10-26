@@ -374,9 +374,6 @@ def query_ssm_ids(
         ],
     )
 
-    # ----- SHOULD: match_all (with boost=0 in original; harmless either way) -----
-    match_all_should = Q("bool", must=[Q("match_all")], boost=0)
-
     # ----- combine the query -----
     must_filters = [occurrence_nested, consequence_nested, regex_should]
     if "mutation_subtype" in filters:
@@ -388,8 +385,10 @@ def query_ssm_ids(
     s = s.query(
         Q(
             "bool",
-            must=must_filters,
-            should=[scoring_should, match_all_should],
+            # Constraints select variants without contributing to their scores.
+            # Only the nested constant-score query counts cohort occurrences.
+            filter=must_filters,
+            must=[scoring_should],
         )
     )
 
@@ -411,7 +410,7 @@ def query_ssm_ids(
         ssm_ids.append(
             {
                 "ssm_id": ssm["_id"],
-                "score": max(ssm["_score"] - 1, 0),
+                "score": ssm["_score"],
                 "mutation_subtype": glom(ssm, "_source.mutation_subtype", default=""),
                 "genomic_dna_change": glom(
                     ssm, "_source.genomic_dna_change", default=""
